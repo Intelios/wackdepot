@@ -10,7 +10,9 @@ use wackdepot_core::commit::CommitOptions;
 
 use crate::components::button::{Variant, button, icon_button};
 use crate::components::text_input::{TextInput, TextInputEvent};
+use crate::icons::icon;
 use crate::model::{Beat, Bucket, BusyOp, RepoEvent, RepoModel};
+use crate::motion::{LINEAR, Motion, POP_STRONG};
 use crate::theme::{ActiveTheme, metrics};
 
 pub struct Composer {
@@ -22,6 +24,7 @@ pub struct Composer {
     co_authors: Vec<(String, String)>,
     adding_coauthor: bool,
     error: Option<String>,
+    motion: Motion,
 }
 
 impl Composer {
@@ -49,7 +52,15 @@ impl Composer {
         )
         .detach();
         cx.subscribe(&model, |this: &mut Self, _, e: &RepoEvent, cx| match e {
-            RepoEvent::Beat(Beat::Committed { .. }) => this.reset(cx),
+            RepoEvent::Beat(Beat::Committed { .. }) => {
+                this.reset(cx);
+                // The seal: a stamp pops onto the card and the rim flashes.
+                this.motion
+                    .restart(("seal", 0), 0.0, 1.0, 1200.0, 0.0, LINEAR);
+                this.motion
+                    .restart(("stamp", 0), 0.4, 1.0, 380.0, 0.0, POP_STRONG);
+                cx.notify();
+            }
             RepoEvent::Opened => this.reset(cx),
             RepoEvent::Snapshot | RepoEvent::Busy => cx.notify(),
             _ => {}
@@ -64,6 +75,7 @@ impl Composer {
             co_authors: Vec::new(),
             adding_coauthor: false,
             error: None,
+            motion: Motion::default(),
         }
     }
 
@@ -161,6 +173,11 @@ fn parse_person(s: &str) -> Option<(String, String)> {
 
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.motion.begin(cx);
+        let seal = self.motion.value(("seal", 0), 1.0);
+        let stamp = self.motion.value(("stamp", 0), 1.0);
+        let sealing = seal < 1.0;
+        self.motion.end(window);
         let t = cx.theme().clone();
         let model = self.model.read(cx);
         let branch = model.branch_label();
@@ -253,7 +270,20 @@ impl Render for Composer {
             );
         }
 
+        let rim = if sealing {
+            t.accent.opacity((1.0 - seal).clamp(0.0, 1.0))
+        } else if focused {
+            t.accent_line_mid
+        } else {
+            t.border_bright.opacity(0.7)
+        };
+        let fade = if seal < 0.65 {
+            1.0
+        } else {
+            (1.0 - (seal - 0.65) / 0.35).max(0.0)
+        };
         div()
+            .relative()
             .flex()
             .flex_col()
             .gap(px(6.))
@@ -261,10 +291,29 @@ impl Render for Composer {
             .rounded(px(metrics::RADIUS_COMPOSER))
             .bg(t.composer)
             .border_1()
-            .border_color(if focused {
-                t.accent_line_mid
-            } else {
-                t.border_bright.opacity(0.7)
+            .border_color(rim)
+            .when(sealing, |el| {
+                let size = 46.0 * stamp;
+                el.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .opacity(fade)
+                        .child(
+                            div()
+                                .size(px(size))
+                                .rounded_full()
+                                .bg(t.accent)
+                                .shadow(t.accent_glow())
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon("check").size(px(size * 0.5)).text_color(t.on_accent)),
+                        ),
+                )
             })
             .when(focused, |el| {
                 el.shadow(vec![gpui::BoxShadow {

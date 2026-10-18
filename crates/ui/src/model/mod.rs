@@ -5,6 +5,7 @@
 pub mod confirm;
 pub mod diff_load;
 mod ops;
+mod optimistic;
 pub mod selection;
 pub mod snapshot;
 
@@ -318,7 +319,7 @@ impl RepoModel {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        if self.running || self.refreshing {
+        if self.running || self.refreshing || !self.queue.is_empty() {
             self.refresh_queued = true;
             return;
         }
@@ -463,12 +464,51 @@ impl RepoModel {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        // Any refresh already in flight read the repo before this op: drop it.
+        self.epoch += 1;
         self.queue.push_back(Job {
             busy,
             repo: Some(repo),
             run: Box::new(job),
         });
         self.pump(cx);
+    }
+
+    /// Show `path` moved to its new bucket right away (see `optimistic`).
+    pub(crate) fn optimistic_toggle(&mut self, path: &str, from: Bucket, cx: &mut Context<Self>) {
+        let Some(status) = self.snap.status.as_ref() else {
+            return;
+        };
+        let next = optimistic::toggle(status, path, from);
+        let prev = self.snap.clone();
+        let mut stats = prev.stats.clone();
+        // Line stats follow the file to its new side.
+        if let Some(st) = prev.line_stat(from, path) {
+            if from == Bucket::Staged {
+                stats.staged.remove(path);
+                stats.unstaged.insert(path.to_string(), st);
+            } else {
+                stats.unstaged.remove(path);
+                stats.staged.insert(path.to_string(), st);
+            }
+        }
+        self.snap = Arc::new(Snapshot {
+            status: Some(next),
+            branches: prev.branches.clone(),
+            log: prev.log.clone(),
+            graph: prev.graph.clone(),
+            stashes: prev.stashes.clone(),
+            unpushed: prev.unpushed.clone(),
+            stats,
+            identity: prev.identity.clone(),
+            tip_unpushed: prev.tip_unpushed,
+        });
+        if let Some(sel) = &self.selection {
+            self.selection = selection::repair(sel, &prev, &self.snap);
+        }
+        cx.emit(RepoEvent::Snapshot);
+        cx.emit(RepoEvent::Selection);
+        cx.notify();
     }
 
     /// Queue an op that isn't tied to the open repo (clone, create). The

@@ -15,7 +15,7 @@ use gpui::{
 use crate::components::text_input;
 use crate::icons;
 use crate::model::{RepoEvent, RepoModel, Tab};
-use crate::motion::Motion;
+use crate::motion::{EASE, Motion, POP};
 use crate::theme::{self, ActiveTheme, metrics};
 use crate::views::diff::DiffCard;
 use crate::views::settings::{SettingsEvent, SettingsNav, SettingsPage};
@@ -122,6 +122,7 @@ impl Workspace {
                 .update(cx, |o, cx| o.confirm(a.clone(), None, cx)),
             RepoEvent::Opened => {
                 ws.route = Route::Repo;
+                ws.rebuild_in();
                 cx.notify();
             }
             _ => cx.notify(),
@@ -134,7 +135,7 @@ impl Workspace {
             .clamp(metrics::SIDEBAR_MIN, metrics::SIDEBAR_MAX);
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        Self {
+        let mut ws = Self {
             focus,
             model,
             overlays,
@@ -147,7 +148,22 @@ impl Workspace {
             backdrop,
             motion: Motion::default(),
             sidebar_width,
-        }
+        };
+        ws.rebuild_in();
+        ws
+    }
+
+    /// The shell assembles itself: the column glides in from the left, the
+    /// card rises a beat later (WackCode's rebuild-in).
+    fn rebuild_in(&mut self) {
+        self.motion
+            .restart(("col-x", 0), -28.0, 0.0, 420.0, 0.0, POP);
+        self.motion
+            .restart(("col-o", 0), 0.0, 1.0, 260.0, 0.0, EASE);
+        self.motion
+            .restart(("card-y", 0), 26.0, 0.0, 460.0, 120.0, POP);
+        self.motion
+            .restart(("card-o", 0), 0.0, 1.0, 300.0, 120.0, EASE);
     }
 
     fn on_drop(&mut self, paths: &ExternalPaths, cx: &mut Context<Self>) {
@@ -181,7 +197,8 @@ impl Workspace {
         cx.notify();
     }
 
-    fn repo_body(&mut self, mix: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn repo_body(&mut self, mix: f32, enter: [f32; 4], cx: &mut Context<Self>) -> gpui::AnyElement {
+        let [col_x, col_o, card_y, card_o] = enter;
         let t = cx.theme().clone();
         let resizing = self.resizing;
         let grab = div()
@@ -226,6 +243,9 @@ impl Workspace {
                 div()
                     .w(px(self.sidebar_width))
                     .flex_none()
+                    .relative()
+                    .left(px(col_x))
+                    .opacity(col_o.clamp(0.0, 1.0))
                     .rounded(px(metrics::RADIUS_CARD))
                     .bg(t.column(mix))
                     .child(self.sidebar.clone()),
@@ -235,6 +255,9 @@ impl Workspace {
                 div()
                     .flex_1()
                     .min_w_0()
+                    .relative()
+                    .top(px(card_y))
+                    .opacity(card_o.clamp(0.0, 1.0))
                     .rounded(px(metrics::RADIUS_CARD))
                     .bg(t.bg)
                     .border_1()
@@ -260,6 +283,12 @@ impl Render for Workspace {
         }
         let t = cx.theme().clone();
         let has_repo = self.model.read(cx).repo.is_some();
+        let enter = [
+            self.motion.value(("col-x", 0), 0.0),
+            self.motion.value(("col-o", 0), 1.0),
+            self.motion.value(("card-y", 0), 0.0),
+            self.motion.value(("card-o", 0), 1.0),
+        ];
 
         let body = if self.route == Route::Settings {
             div()
@@ -290,7 +319,7 @@ impl Render for Workspace {
                 )
                 .into_any_element()
         } else if has_repo {
-            self.repo_body(mix, cx)
+            self.repo_body(mix, enter, cx)
         } else {
             div()
                 .flex_1()
@@ -298,6 +327,9 @@ impl Render for Workspace {
                 .bg(t.bg)
                 .border_1()
                 .border_color(t.border_bright.opacity(0.7))
+                .relative()
+                .top(px(enter[2]))
+                .opacity(enter[3].clamp(0.0, 1.0))
                 .child(Welcome {
                     model: self.model.clone(),
                     overlays: self.overlays.clone(),

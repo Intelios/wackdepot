@@ -14,7 +14,7 @@ use super::{
 use crate::components::button::icon_button;
 use crate::components::mark::status_mark;
 use crate::components::menu::{menu_row, menu_separator, popover};
-use crate::components::misc::{count_pill, empty_state};
+use crate::components::misc::{empty_state, rolling_count};
 use crate::components::seam::trail;
 use crate::icons::icon;
 use crate::model::{Bucket, ConfirmAction, Selection};
@@ -322,7 +322,7 @@ impl SidebarView {
                     })
                     .child(b.title()),
             )
-            .child(count_pill(n, cx))
+            .child(rolling_count(("group-count", b as usize), n, cx))
             .child(trail())
             .child(
                 div()

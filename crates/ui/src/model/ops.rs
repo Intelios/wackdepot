@@ -214,6 +214,7 @@ impl RepoModel {
 
     /// Stage or unstage one file (a conflicted file is marked resolved).
     pub fn toggle_stage(&mut self, path: String, bucket: Bucket, cx: &mut Context<Self>) {
+        self.optimistic_toggle(&path, bucket, cx);
         match bucket {
             Bucket::Staged => self.run(
                 BusyOp::Other("Unstaging"),

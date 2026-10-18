@@ -269,28 +269,43 @@ impl Motion {
         self.tween(key, target, dur_ms, ease)
     }
 
-    /// Restart a key's tween from `from` (re-trigger a one-shot beat).
+    /// Restart a key's tween from `from` after `delay_ms` (re-trigger a
+    /// one-shot beat).
     pub fn restart(
         &mut self,
         key: MotionKey,
         from: f32,
         target: f32,
         dur_ms: f32,
+        delay_ms: f32,
         ease: CubicBezier,
     ) {
         if self.reduce {
             return;
         }
+        self.touched.insert(key);
+        // Beats are usually triggered from event handlers, between frames:
+        // read the clock now rather than the last frame's time.
         self.tracks.insert(
             key,
             Track::Tween {
                 from: f64::from(from),
                 to: f64::from(target),
-                t0: self.now,
+                t0: clock::now() + f64::from(delay_ms) / 1000.0,
                 dur: f64::from(dur_ms) / 1000.0,
                 ease,
             },
         );
+        self.active = true;
+    }
+
+    /// The current value of `key` (its target once settled; `rest` if
+    /// it has no track).
+    pub fn value(&mut self, key: MotionKey, rest: f32) -> f32 {
+        if !self.tracks.contains_key(&key) {
+            return rest;
+        }
+        self.sample(key)
     }
 
     /// Whether `key` is still in flight.

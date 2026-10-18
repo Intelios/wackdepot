@@ -176,7 +176,11 @@ impl RenderOnce for PillTrack {
                 seg = seg.hover(|s| s.text_color(t.text_soft));
             }
             if let Some(c) = count {
-                seg = seg.child(crate::components::misc::count_pill(c, cx));
+                seg = seg.child(crate::components::misc::rolling_count(
+                    ("track-count", i),
+                    c,
+                    cx,
+                ));
             }
             if let Some(cb) = cb {
                 seg = seg.on_click(move |_, w, cx| cb(i, w, cx));

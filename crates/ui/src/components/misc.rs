@@ -10,6 +10,25 @@ use crate::components::seam::dotted_ring;
 use crate::icons::icon;
 use crate::theme::{ActiveTheme, metrics};
 
+/// A small rounded count whose number rolls when it changes.
+pub fn rolling_count(id: impl Into<gpui::ElementId>, n: usize, cx: &App) -> impl IntoElement {
+    let t = cx.theme();
+    div()
+        .flex_none()
+        .min_w(px(18.))
+        .h(px(17.))
+        .px(px(6.))
+        .rounded_full()
+        .bg(t.pill())
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(10.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.text_soft)
+        .child(crate::components::rolling::rolling(id, n as i64, 17.))
+}
+
 /// A small rounded count (tabular figures).
 pub fn count_pill(n: usize, cx: &App) -> impl IntoElement {
     let t = cx.theme();

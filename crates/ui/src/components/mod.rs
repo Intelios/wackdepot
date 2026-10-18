@@ -10,6 +10,7 @@ pub mod mascot;
 pub mod menu;
 pub mod misc;
 pub mod pill_track;
+pub mod rolling;
 pub mod seam;
 pub mod slider;
 pub mod spinner;

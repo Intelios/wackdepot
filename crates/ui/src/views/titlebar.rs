@@ -14,12 +14,13 @@ use crate::components::button::{Variant, button, icon_button};
 use crate::components::drag::drag_strip;
 use crate::components::mark::monogram;
 use crate::components::menu::{menu_heading, menu_row, menu_separator, popover};
-use crate::components::misc::{count_pill, empty_state, kbd};
+use crate::components::misc::{empty_state, kbd};
 use crate::components::pill_track::pill_track;
 use crate::components::spinner::orbit;
 use crate::components::text_input::{TextInput, TextInputEvent};
 use crate::icons::icon;
-use crate::model::{BusyOp, ConfirmAction, RepoEvent, RepoModel};
+use crate::model::{Beat, ConfirmAction, RepoEvent, RepoModel};
+use crate::motion::{GLIDE, Motion};
 use crate::theme::{ActiveTheme, metrics};
 use crate::views::dialogs::NameKind;
 
@@ -40,6 +41,7 @@ pub struct TitlebarView {
     new_branch: Entity<TextInput>,
     /// Branches · Pull requests.
     branch_tab: usize,
+    motion: Motion,
 }
 
 impl TitlebarView {
@@ -48,10 +50,15 @@ impl TitlebarView {
         overlays: Entity<Overlays>,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.subscribe(&model, |_, _, e: &RepoEvent, cx| {
-            if matches!(e, RepoEvent::Snapshot | RepoEvent::Busy | RepoEvent::Opened) {
+        cx.subscribe(&model, |this: &mut Self, _, e: &RepoEvent, cx| match e {
+            RepoEvent::Beat(Beat::Pushed) => {
+                // The comet: it leaves the sync pill and the ↑ count rolls to 0.
+                this.motion
+                    .restart(("comet", 0), 0.0, 1.0, 900.0, 0.0, GLIDE);
                 cx.notify();
             }
+            RepoEvent::Snapshot | RepoEvent::Busy | RepoEvent::Opened => cx.notify(),
+            _ => {}
         })
         .detach();
         let repo_filter = cx.new(|cx| TextInput::new("Filter repositories", cx));
@@ -75,6 +82,7 @@ impl TitlebarView {
             branch_filter,
             new_branch,
             branch_tab: 0,
+            motion: Motion::default(),
         }
     }
 
@@ -223,7 +231,12 @@ impl TitlebarView {
 
     /// The sync split-pill: the primary action (by state) with live
     /// progress, and a chevron into the sync menu.
-    fn sync_pill(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn sync_pill(
+        &self,
+        window: &mut Window,
+        comet: f32,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let t = cx.theme().clone();
         let model = self.model.read(cx);
         let status = model.snap.status.as_ref();
@@ -241,6 +254,7 @@ impl TitlebarView {
                     .unwrap_or_default();
                 ("fetch", format!("{}{pct}", op.label()).into(), true)
             }
+            None if comet < 1.0 => ("check", "Pushed".into(), true),
             _ if unpublished => ("cloud", "Publish branch".into(), true),
             _ if behind > 0 => ("pull", format!("Pull {behind}").into(), true),
             _ if ahead > 0 => ("push", format!("Push {ahead}").into(), true),
@@ -302,6 +316,27 @@ impl TitlebarView {
             .occlude()
             .child(main)
             .child(chevron);
+        if comet < 1.0 {
+            // A lead bead and its fading trail arc up out of the pill.
+            let fade = if comet < 0.7 {
+                1.0
+            } else {
+                (1.0 - (comet - 0.7) / 0.3).max(0.0)
+            };
+            for k in 0..5 {
+                let p = (comet - k as f32 * 0.05).max(0.0);
+                let size = 6.0 - k as f32;
+                pill = pill.child(
+                    div()
+                        .absolute()
+                        .left(px(14.0 + p * 70.0 - size / 2.0))
+                        .top(px(13.0 - p * 34.0 - size / 2.0))
+                        .size(px(size))
+                        .rounded_full()
+                        .bg(t.accent.opacity(fade * (1.0 - k as f32 * 0.18))),
+                );
+            }
+        }
         if open {
             pill = pill.child(self.sync_menu(window, cx));
         }
@@ -869,6 +904,9 @@ impl TitlebarView {
 
 impl Render for TitlebarView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.motion.begin(cx);
+        let comet = self.motion.value(("comet", 0), 1.0);
+        self.motion.end(window);
         let has_repo = self.model.read(cx).repo.is_some();
         let busy_other = self.model.read(cx).busy.filter(|b| !b.is_sync());
         let t = cx.theme().clone();
@@ -896,11 +934,7 @@ impl Render for TitlebarView {
         }
         let mut right = div().flex().items_center().gap(px(6.)).pr(px(10.));
         if has_repo {
-            let changed = self.model.read(cx).snap.changed_count();
-            if changed > 0 && self.model.read(cx).busy != Some(BusyOp::Commit) {
-                let _ = count_pill(changed, cx);
-            }
-            right = right.child(self.sync_pill(window, cx));
+            right = right.child(self.sync_pill(window, comet, cx));
         }
         right = right.child(self.more_button(window, cx));
         drag_strip(
