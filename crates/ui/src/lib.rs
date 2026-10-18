@@ -6,10 +6,12 @@ pub mod app;
 pub mod components;
 pub mod icons;
 mod legacy;
+pub mod model;
 pub mod motion;
 mod native;
 pub mod settings;
 pub mod theme;
+pub mod views;
 mod watcher;
 
 #[cfg(test)]

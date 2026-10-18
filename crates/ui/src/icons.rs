@@ -11,114 +11,217 @@ use gpui::{AssetSource, SharedString, Svg, prelude::*, svg};
 
 const STROKE_SVG_HEADER: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">"##;
 
-macro_rules! icon {
-    ($name:literal, $($body:tt)*) => {
-        ($name, concat!($($body)*))
-    };
-}
-
-/// name → svg body (paths only; shared header adds stroke style).
+/// name → svg body (paths only; the shared header adds the stroke style).
+/// WackCode's paths where it has the glyph; new ones drawn in the same hand.
 static ICONS: &[(&str, &str)] = &[
-    icon!(
-        "folder",
-        r#"<path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/>"#
+    ("folder", r#"<path d="M3 6.5h6l2 2h10v10.5H3z"/>"#),
+    (
+        "folder-plus",
+        r#"<path d="M3 6.5h6l2 2h10v10.5H3z"/><path d="M12 11.5v5M9.5 14h5"/>"#,
     ),
-    icon!(
-        "git-branch",
-        r#"<circle cx="7" cy="5.5" r="2.2"/><circle cx="7" cy="18.5" r="2.2"/><circle cx="17" cy="8" r="2.2"/><path d="M7 7.7v8.6"/><path d="M17 10.2c0 3.8-3 4.8-6.2 5.6"/>"#
+    (
+        "branch",
+        r#"<circle cx="7" cy="5" r="2"/><circle cx="7" cy="19" r="2"/><circle cx="17" cy="8" r="2"/><path d="M7 7v10M9 15c4 0 6-2 6-5"/>"#,
     ),
-    icon!(
-        "history",
-        r#"<path d="M4.5 12a7.5 7.5 0 1 1 2.2 5.3"/><path d="M4.5 12H2.5M4.5 12l1.8-1.8"/><path d="M12 8v4.4l3 1.8"/>"#
-    ),
-    icon!(
-        "fetch",
-        r#"<path d="M12 4v9"/><path d="M8 9.5 12 13.5 16 9.5"/><path d="M5 17.5h14"/><path d="M19.5 5.5 18 7"/>"#
-    ),
-    icon!(
-        "push",
-        r#"<path d="M12 20v-9"/><path d="M8 14.5 12 10.5l4 4"/><path d="M5 6.5h14"/>"#
-    ),
-    icon!(
-        "pull",
-        r#"<path d="M12 4v9"/><path d="M8 9.5 12 13.5 16 9.5"/><path d="M5 17.5h14"/>"#
-    ),
-    icon!(
-        "sync",
-        r#"<path d="M18.5 8.5A7.5 7.5 0 0 0 5.8 9.4"/><path d="M5.5 15.5a7.5 7.5 0 0 0 12.7-.9"/><path d="M18.5 4.5v4h-4"/><path d="M5.5 19.5v-4h4"/>"#
-    ),
-    icon!("plus", r#"<path d="M12 5.5v13"/><path d="M5.5 12h13"/>"#),
-    icon!("check", r#"<path d="m5 12.5 4.5 4.5L19 7.5"/>"#),
-    icon!(
-        "x",
-        r#"<path d="m6.5 6.5 11 11"/><path d="m17.5 6.5-11 11"/>"#
-    ),
-    icon!("chevron-down", r#"<path d="m6.5 9.5 5.5 5 5.5-5"/>"#),
-    icon!("chevron-right", r#"<path d="m9.5 6.5 5 5.5-5 5.5"/>"#),
-    icon!("chevron-left", r#"<path d="m14.5 6.5-5 5.5 5 5.5"/>"#),
-    icon!(
-        "settings",
-        r#"<circle cx="12" cy="12" r="3.2"/><path d="M12 3.8v2.2M12 18v2.2M20.2 12H18M6 12H3.8M17.8 6.2l-1.6 1.6M7.8 16.2l-1.6 1.6M17.8 17.8l-1.6-1.6M7.8 7.8 6.2 6.2"/>"#
-    ),
-    icon!(
-        "undo",
-        r#"<path d="M8.5 5.5 4.5 9.5l4 4"/><path d="M5 9.5h9a5 5 0 0 1 0 10h-3"/>"#
-    ),
-    icon!(
-        "trash",
-        r#"<path d="M5 7h14"/><path d="M9.5 7V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v2"/><path d="M7 7l.8 11a2 2 0 0 0 2 1.8h4.4a2 2 0 0 0 2-1.8L17 7"/>"#
-    ),
-    icon!(
-        "external",
-        r#"<path d="M10 5.5H6.5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V14"/><path d="M14 4.5h5.5V10"/><path d="M19 5 11.5 12.5"/>"#
-    ),
-    icon!(
-        "ellipsis",
-        r#"<circle cx="5.5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.3" fill="currentColor" stroke="none"/>"#
-    ),
-    icon!(
-        "warning",
-        r#"<path d="M12 4.5 21 19.5H3Z"/><path d="M12 10v4"/><circle cx="12" cy="16.8" r=".9" fill="currentColor" stroke="none"/>"#
-    ),
-    icon!(
-        "git-merge",
-        r#"<circle cx="7" cy="6" r="2.2"/><circle cx="7" cy="18" r="2.2"/><circle cx="17" cy="18" r="2.2"/><path d="M17 15.8V11a3 3 0 0 0-3-3H9.2"/>"#
-    ),
-    icon!(
-        "search",
-        r#"<circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/>"#
-    ),
-    icon!(
-        "file",
-        r#"<path d="M6 3.5h7.5L18.5 8v12a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 20V5A1.5 1.5 0 0 1 7 3.5Z"/><path d="M13.5 3.5V8H18"/>"#
-    ),
-    icon!(
-        "dot",
-        r#"<circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"/>"#
-    ),
-    icon!(
+    (
         "commit",
-        r#"<circle cx="12" cy="12" r="3.5"/><path d="M3.5 12h5"/><path d="M15.5 12h5"/>"#
+        r#"<circle cx="12" cy="12" r="3.5"/><path d="M3.5 12h5M15.5 12h5"/>"#,
     ),
-    icon!(
-        "stash",
-        r#"<path d="M4.5 8.5 12 4l7.5 4.5v7L12 20l-7.5-4.5Z"/><path d="M4.5 8.5 12 13l7.5-4.5"/><path d="M12 13v7"/>"#
+    (
+        "push",
+        r#"<path d="M12 19V5"/><path d="m6 11 6-6 6 6"/><path d="M4.5 21.5h15"/>"#,
     ),
-    icon!(
-        "cloud",
-        r#"<path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 8.5a4 4 0 0 1 .6 9.46"/>"#
+    (
+        "pull",
+        r#"<path d="M12 3v14"/><path d="m6 11 6 6 6-6"/><path d="M4.5 21.5h15"/>"#,
     ),
-    icon!(
+    (
+        "fetch",
+        r#"<path d="M20 12a8 8 0 1 1-2.35-5.65"/><path d="M20 4v4.5h-4.5"/><path d="M12 8.5v6"/><path d="m9.5 12 2.5 2.5 2.5-2.5"/>"#,
+    ),
+    (
+        "refresh",
+        r#"<path d="M20 7v5h-5"/><path d="M19 12a7 7 0 1 0-2 5"/>"#,
+    ),
+    (
+        "pull-request",
+        r#"<circle cx="6" cy="5.5" r="2"/><circle cx="6" cy="18.5" r="2"/><path d="M6 7.5v9"/><circle cx="18" cy="8.5" r="2"/><path d="M18 10.5c0 4-4 3.5-7 5.5"/>"#,
+    ),
+    (
+        "split",
+        r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/><path d="M6 9h3M6 12.5h3M15 9h3M15 15.5h3"/>"#,
+    ),
+    (
+        "unified",
+        r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9h10M7 12.5h7M7 16h9"/>"#,
+    ),
+    (
+        "undo",
+        r#"<path d="M9 14 4.5 9.5 9 5"/><path d="M4.5 9.5H14a5.5 5.5 0 0 1 0 11h-3"/>"#,
+    ),
+    (
+        "more",
+        r#"<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>"#,
+    ),
+    ("check", r#"<path d="m4.5 12.5 5 5 10-11"/>"#),
+    ("close", r#"<path d="M6 6l12 12M18 6 6 18"/>"#),
+    ("plus", r#"<path d="M12 5v14M5 12h14"/>"#),
+    ("minus", r#"<path d="M5 12h14"/>"#),
+    (
+        "settings",
+        r#"<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.1A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.4 4a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.13.37.34.7.6 1 .3.27.67.4 1.1.4h.1v4h-.1A1.7 1.7 0 0 0 19.4 15Z"/>"#,
+    ),
+    (
+        "search",
+        r#"<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>"#,
+    ),
+    ("chevron", r#"<path d="m9 18 6-6-6-6"/>"#),
+    ("chevron-down", r#"<path d="m6 9 6 6 6-6"/>"#),
+    ("back", r#"<path d="m15 18-6-6 6-6"/>"#),
+    ("trash", r#"<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/>"#),
+    (
+        "copy",
+        r#"<rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>"#,
+    ),
+    (
+        "external",
+        r#"<path d="M14 4h6v6"/><path d="M20 4 10.5 13.5"/><path d="M19 14v5.5h-14.5V9.5H10"/>"#,
+    ),
+    (
+        "terminal",
+        r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12.5 15H17"/>"#,
+    ),
+    (
+        "file",
+        r#"<path d="M6 2.5h8l4 4V21.5H6z"/><path d="M14 2.5V7h4"/>"#,
+    ),
+    (
+        "file-code",
+        r#"<path d="M6 2.5h8l4 4V21.5H6z"/><path d="M14 2.5V7h4"/><path d="m10 12-2 2 2 2M14 12l2 2-2 2"/>"#,
+    ),
+    (
         "globe",
-        r#"<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c-4.8 4.9-4.8 12.1 0 17"/><path d="M12 3.5c4.8 4.9 4.8 12.1 0 17"/>"#
+        r#"<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.4 2.6 3.6 5.6 3.6 9s-1.2 6.4-3.6 9c-2.4-2.6-3.6-5.6-3.6-9S9.6 5.6 12 3z"/>"#,
     ),
-    icon!(
+    (
+        "palette",
+        r#"<path d="M12 3a9 9 0 0 0 0 18c1.1 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.8-1.7 1.8-1.7H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3Z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10" cy="7" r="1.2"/><circle cx="15" cy="7" r="1.2"/>"#,
+    ),
+    (
+        "spark",
+        r#"<path d="m12 3 1.2 4.8L18 9l-4.8 1.2L12 15l-1.2-4.8L6 9l4.8-1.2z"/><path d="m18 15 .7 2.3L21 18l-2.3.7L18 21l-.7-2.3L15 18l2.3-.7z"/>"#,
+    ),
+    (
+        "lock",
+        r#"<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>"#,
+    ),
+    (
+        "clock",
+        r#"<circle cx="12" cy="12" r="8.5"/><path d="M12 12V7"/><path d="m12 12 3 1.8"/>"#,
+    ),
+    (
+        "link",
+        r#"<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>"#,
+    ),
+    ("alert", r#"<path d="M12 4.5v9.5"/><path d="M12 19h.01"/>"#),
+    (
+        "pencil",
+        r#"<path d="M4 20l1-4L16.5 4.5a2.1 2.1 0 0 1 3 3L8 19z"/><path d="m14.5 6.5 3 3"/>"#,
+    ),
+    (
+        "merge",
+        r#"<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 7v10"/><path d="M6 7c0 3 3.5 5 10 5"/>"#,
+    ),
+    (
+        "rebase",
+        r#"<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="18" cy="13" r="2"/><path d="M6 17V9a4 4 0 0 1 4-4h6M18 7v4"/>"#,
+    ),
+    (
+        "cherry",
+        r#"<circle cx="7.5" cy="17" r="3"/><circle cx="16.5" cy="17" r="3"/><path d="M7.5 14c1-5 3.5-8 7.5-10M16.5 14c-.5-3-1.5-6-1.5-10"/>"#,
+    ),
+    (
+        "tag",
+        r#"<path d="M3.5 12.6V4.5a1 1 0 0 1 1-1h8.1l8 8a1.4 1.4 0 0 1 0 2l-7.1 7.1a1.4 1.4 0 0 1-2 0z"/><circle cx="8.5" cy="8.5" r="1.4"/>"#,
+    ),
+    (
+        "user-plus",
+        r#"<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M19 8v6M16 11h6"/>"#,
+    ),
+    (
+        "amend",
+        r#"<path d="M4 20l1-4L14.5 6.5a2.1 2.1 0 0 1 3 3L8 19z"/><path d="M15 20h5"/>"#,
+    ),
+    (
+        "conflict",
+        r#"<path d="M12 3.5 21 19.5H3z"/><path d="M12 10v4.5"/><path d="M12 17.5h.01"/>"#,
+    ),
+    (
+        "stash",
+        r#"<path d="M4 8h16v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/><path d="M3 4.5h18V8H3z"/><path d="M10 12h4"/>"#,
+    ),
+    (
+        "cloud",
+        r#"<path d="M7 18.5a4.5 4.5 0 0 1-.4-9 6 6 0 0 1 11.4 1.4 3.8 3.8 0 0 1-.6 7.6z"/>"#,
+    ),
+    (
         "eye-off",
-        r#"<path d="M4 4.5 20 19.5"/><path d="M9.9 5.6A9.5 9.5 0 0 1 12 5.5c5 0 8.5 4 9.5 6.5a17.7 17.7 0 0 1-3.2 3.9M6.1 7.8A17 17 0 0 0 2.5 12c1 2.5 4.5 6.5 9.5 6.5a9.3 9.3 0 0 0 3.5-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>"#
+        r#"<path d="M3 3l18 18"/><path d="M10.6 6.2A9.7 9.7 0 0 1 12 6c5 0 8.5 4.5 9.5 6a16 16 0 0 1-2.9 3.4M6.6 7.6A16 16 0 0 0 2.5 12c1 1.5 4.5 6 9.5 6a9 9 0 0 0 4.1-1"/><path d="M9.9 10a3 3 0 0 0 4.1 4.1"/>"#,
     ),
-    icon!(
+    (
+        "dot",
+        r#"<circle cx="12" cy="12" r="3.5" fill="currentColor"/>"#,
+    ),
+    (
+        "arrow-up",
+        r#"<path d="M12 19V5"/><path d="m6 11 6-6 6 6"/>"#,
+    ),
+    (
+        "arrow-down",
+        r#"<path d="M12 5v14"/><path d="m6 13 6 6 6-6"/>"#,
+    ),
+    (
+        "repo",
+        r#"<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"/><path d="M9 7h6"/>"#,
+    ),
+    (
+        "whitespace",
+        r#"<path d="M4 15v3h16v-3"/><path d="M9 9h6M12 9v6"/>"#,
+    ),
+    (
+        "expand",
+        r#"<path d="M12 3v6M9 6l3-3 3 3M12 21v-6M9 18l3 3 3-3"/>"#,
+    ),
+    (
+        "git-branch",
+        r#"<circle cx="7" cy="5" r="2"/><circle cx="7" cy="19" r="2"/><circle cx="17" cy="8" r="2"/><path d="M7 7v10M9 15c4 0 6-2 6-5"/>"#,
+    ),
+    (
+        "history",
+        r#"<circle cx="12" cy="12" r="8.5"/><path d="M12 12V7"/><path d="m12 12 3 1.8"/>"#,
+    ),
+    (
+        "sync",
+        r#"<path d="M20 7v5h-5"/><path d="M19 12a7 7 0 1 0-2 5"/>"#,
+    ),
+    ("x", r#"<path d="M6 6l12 12M18 6 6 18"/>"#),
+    ("chevron-right", r#"<path d="m9 18 6-6-6-6"/>"#),
+    ("chevron-left", r#"<path d="m15 18-6-6 6-6"/>"#),
+    (
+        "ellipsis",
+        r#"<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>"#,
+    ),
+    (
+        "warning",
+        r#"<path d="M12 3.5 21 19.5H3z"/><path d="M12 10v4.5"/><path d="M12 17.5h.01"/>"#,
+    ),
+    (
+        "git-merge",
+        r#"<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 7v10"/><path d="M6 7c0 3 3.5 5 10 5"/>"#,
+    ),
+    (
         "repo-add",
-        r#"<path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/><path d="M12 10.5v5"/><path d="M9.5 13h5"/>"#
+        r#"<path d="M3 6.5h6l2 2h10v10.5H3z"/><path d="M12 11.5v5M9.5 14h5"/>"#,
     ),
 ];
 
