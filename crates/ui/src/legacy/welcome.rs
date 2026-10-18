@@ -5,9 +5,9 @@
 use gpui::{Context, Div, Styled, div, prelude::*, px};
 
 use crate::icons::icon;
-use crate::shell::Shell;
-use crate::state::Dialog;
-use crate::theme::Theme;
+use crate::legacy::shell::Shell;
+use crate::legacy::state::Dialog;
+use crate::legacy::theme::Theme;
 
 impl Shell {
     pub fn welcome_view(&self, cx: &mut Context<Self>, theme: &Theme) -> Div {

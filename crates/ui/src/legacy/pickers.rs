@@ -4,16 +4,16 @@
 use gpui::{AnyElement, Context, Div, Styled, div, prelude::*};
 
 use crate::icons::icon;
-use crate::popover::{menu, row};
-use crate::shell::Shell;
-use crate::state::Dialog;
+use crate::legacy::popover::{menu, row};
+use crate::legacy::shell::Shell;
+use crate::legacy::state::Dialog;
 
 impl Shell {
     /// The repo switcher: list of added repos + add/clone/create actions.
     pub fn repo_picker(
         &self,
         cx: &mut Context<Self>,
-        theme: &crate::theme::Theme,
+        theme: &crate::legacy::theme::Theme,
     ) -> impl IntoElement {
         let mut items: Vec<AnyElement> = Vec::new();
         for path in self.settings.repos.clone() {
@@ -104,7 +104,7 @@ impl Shell {
     pub fn branch_picker(
         &self,
         cx: &mut Context<Self>,
-        theme: &crate::theme::Theme,
+        theme: &crate::legacy::theme::Theme,
     ) -> impl IntoElement {
         let mut items: Vec<AnyElement> = Vec::new();
         let current = self.repo.status.as_ref().and_then(|s| s.branch.clone());
@@ -225,7 +225,7 @@ impl Shell {
     pub fn sync_menu(
         &self,
         cx: &mut Context<Self>,
-        theme: &crate::theme::Theme,
+        theme: &crate::legacy::theme::Theme,
     ) -> impl IntoElement {
         let mut items: Vec<AnyElement> = vec![
             row(
@@ -361,7 +361,7 @@ impl Shell {
     }
 }
 
-fn separator(theme: &crate::theme::Theme) -> Div {
+fn separator(theme: &crate::legacy::theme::Theme) -> Div {
     div().h_px().mx_1().my_1().bg(theme.border)
 }
 

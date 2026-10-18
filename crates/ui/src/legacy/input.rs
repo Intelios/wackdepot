@@ -15,7 +15,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 actions!(
-    text_input,
+    legacy_text_input,
     [
         Backspace,
         Delete,

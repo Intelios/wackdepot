@@ -7,9 +7,9 @@ use gpui::{AnyElement, Context, Div, Styled, div, prelude::*, uniform_list};
 use wackdepot_core::status::FileChange;
 
 use crate::icons::icon;
-use crate::shell::Shell;
-use crate::state::{Bucket, Selected};
-use crate::theme::Theme;
+use crate::legacy::shell::Shell;
+use crate::legacy::state::{Bucket, Selected};
+use crate::legacy::theme::Theme;
 
 /// One row in the flattened changes list model.
 #[derive(Clone)]

@@ -3,13 +3,13 @@
 
 use gpui::{AnyElement, Context, Div, Styled, div, prelude::*, px};
 
-use crate::frost::{self, MENU_BLUR};
 use crate::icons::icon;
-use crate::motion;
-use crate::ops::PickTarget;
-use crate::shell::Shell;
-use crate::state::{ConfirmAction, Dialog, Notice};
-use crate::theme::Theme;
+use crate::legacy::frost::{self, MENU_BLUR};
+use crate::legacy::motion;
+use crate::legacy::ops::PickTarget;
+use crate::legacy::shell::Shell;
+use crate::legacy::state::{ConfirmAction, Dialog, Notice};
+use crate::legacy::theme::Theme;
 
 /// A dialog action button; `danger` paints it in the danger color.
 fn button(theme: &Theme, id: &'static str, label: &str, kind: BtnKind) -> gpui::Stateful<Div> {
@@ -390,7 +390,7 @@ impl Shell {
 }
 
 /// Label + input field.
-fn field(theme: &Theme, label: &str, input: gpui::Entity<crate::input::TextInput>) -> Div {
+fn field(theme: &Theme, label: &str, input: gpui::Entity<crate::legacy::input::TextInput>) -> Div {
     div()
         .flex()
         .flex_col()
@@ -418,7 +418,7 @@ fn field(theme: &Theme, label: &str, input: gpui::Entity<crate::input::TextInput
 fn field_row(
     theme: &Theme,
     label: &str,
-    input: gpui::Entity<crate::input::TextInput>,
+    input: gpui::Entity<crate::legacy::input::TextInput>,
     btn_label: &str,
     on_choose: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> Div {

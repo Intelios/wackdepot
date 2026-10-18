@@ -8,9 +8,9 @@ use gpui::{
     prelude::*, px,
 };
 
-use crate::frost::{self, MENU_BLUR};
-use crate::motion;
-use crate::theme::Theme;
+use crate::legacy::frost::{self, MENU_BLUR};
+use crate::legacy::motion;
+use crate::legacy::theme::Theme;
 
 /// A frosted popover card anchored to its parent element. The caller wraps
 /// the trigger element with `.child(menu(...))` inside `.when(open, ...)`.

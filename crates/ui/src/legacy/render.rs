@@ -6,10 +6,10 @@ use gpui::{
 };
 
 use crate::icons::icon;
-use crate::motion;
-use crate::shell::Shell;
-use crate::state::{BusyOp, Dialog, PopoverKind, Selected, Tab};
-use crate::theme::{self, Theme};
+use crate::legacy::motion;
+use crate::legacy::shell::Shell;
+use crate::legacy::state::{BusyOp, Dialog, PopoverKind, Selected, Tab};
+use crate::legacy::theme::{self, Theme};
 
 /// A small pill button in the titlebar or rail.
 pub fn pill_button(theme: &Theme, el: Stateful<Div>, active: bool) -> Stateful<Div> {
@@ -355,30 +355,32 @@ impl Render for Shell {
 
         let mut root = div()
             // App actions — keymap dispatch lands on the root's path.
-            .on_action(cx.listener(|this, _: &crate::Dismiss, _, cx| this.dismiss(cx)))
-            .on_action(cx.listener(|this, _: &crate::ShowChanges, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::legacy::Dismiss, _, cx| this.dismiss(cx)))
+            .on_action(cx.listener(|this, _: &crate::legacy::ShowChanges, _, cx| {
                 this.tab = Tab::Changes;
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &crate::ShowHistory, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::legacy::ShowHistory, _, cx| {
                 this.tab = Tab::History;
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &crate::ToggleBranches, _, cx| {
-                this.popover = match this.popover {
-                    Some(PopoverKind::BranchPicker) => None,
-                    _ => Some(PopoverKind::BranchPicker),
-                };
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &crate::DoFetch, _, cx| this.fetch(cx)))
-            .on_action(cx.listener(|this, _: &crate::DoPull, _, cx| this.pull(cx)))
-            .on_action(cx.listener(|this, _: &crate::DoPush, _, cx| this.push(cx)))
-            .on_action(cx.listener(|this, _: &crate::DoCommit, _, cx| this.do_commit(cx)))
-            .on_action(cx.listener(|this, _: &crate::Refresh, _, cx| {
+            .on_action(
+                cx.listener(|this, _: &crate::legacy::ToggleBranches, _, cx| {
+                    this.popover = match this.popover {
+                        Some(PopoverKind::BranchPicker) => None,
+                        _ => Some(PopoverKind::BranchPicker),
+                    };
+                    cx.notify();
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::legacy::DoFetch, _, cx| this.fetch(cx)))
+            .on_action(cx.listener(|this, _: &crate::legacy::DoPull, _, cx| this.pull(cx)))
+            .on_action(cx.listener(|this, _: &crate::legacy::DoPush, _, cx| this.push(cx)))
+            .on_action(cx.listener(|this, _: &crate::legacy::DoCommit, _, cx| this.do_commit(cx)))
+            .on_action(cx.listener(|this, _: &crate::legacy::Refresh, _, cx| {
                 this.request_refresh(cx);
             }))
-            .on_action(cx.listener(|this, _: &crate::OpenSettings, _, cx| {
+            .on_action(cx.listener(|this, _: &crate::legacy::OpenSettings, _, cx| {
                 this.dialog = Some(Dialog::Settings);
                 cx.notify();
             }))

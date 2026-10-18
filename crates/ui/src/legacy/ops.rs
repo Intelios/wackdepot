@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use gpui::Context;
 use wackdepot_core::{branch, commit, diff, stage, stash, status, sync};
 
-use crate::shell::Shell;
-use crate::state::{Bucket, BusyOp, ConfirmAction, Dialog};
+use crate::legacy::shell::Shell;
+use crate::legacy::state::{Bucket, BusyOp, ConfirmAction, Dialog};
 
 impl Shell {
     // ------------------------------------------------------------ sync ops

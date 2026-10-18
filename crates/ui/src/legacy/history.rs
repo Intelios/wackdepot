@@ -4,9 +4,9 @@
 use gpui::{AnyElement, Context, Div, Stateful, Styled, div, prelude::*, px, uniform_list};
 
 use crate::icons::icon;
-use crate::shell::Shell;
-use crate::state::Selected;
-use crate::theme::Theme;
+use crate::legacy::shell::Shell;
+use crate::legacy::state::Selected;
+use crate::legacy::theme::Theme;
 
 impl Shell {
     pub fn history_view(&self, cx: &mut Context<Self>, theme: &Theme) -> Div {

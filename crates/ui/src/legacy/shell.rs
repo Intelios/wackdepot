@@ -13,10 +13,10 @@ use gpui::{
 };
 use wackdepot_core::{branch, commit, diff, stash, status};
 
-use crate::input::TextInput;
+use crate::legacy::input::TextInput;
+use crate::legacy::state::{Bucket, BusyOp, Dialog, Notice, PopoverKind, Selected, Tab};
+use crate::legacy::theme::Theme;
 use crate::settings::{self, Settings};
-use crate::state::{Bucket, BusyOp, Dialog, Notice, PopoverKind, Selected, Tab};
-use crate::theme::Theme;
 use crate::watcher::{self, RepoWatcher};
 
 /// How often the shell polls the watcher flag and soft-refreshes.

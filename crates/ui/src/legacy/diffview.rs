@@ -6,9 +6,9 @@ use gpui::{AnyElement, Context, Div, Styled, div, prelude::*, px, uniform_list};
 use wackdepot_core::diff::{DiffFileStatus, DiffLineKind, Hunk};
 
 use crate::icons::icon;
-use crate::shell::Shell;
-use crate::state::Bucket;
-use crate::theme::Theme;
+use crate::legacy::shell::Shell;
+use crate::legacy::state::Bucket;
+use crate::legacy::theme::Theme;
 
 const ROW_H: f32 = 20.0;
 
@@ -98,7 +98,7 @@ impl Shell {
         &self,
         cx: &mut Context<Self>,
         theme: &Theme,
-        sel: &crate::shell::SelectedDiff,
+        sel: &crate::legacy::shell::SelectedDiff,
     ) -> Div {
         let title = if let Some(c) = &sel.commit {
             format!("{} — {}", c.short, c.subject)
