@@ -19,8 +19,9 @@ WackDepot is a native macOS Git GUI — a GitHub-Desktop-class app rebuilt in Ru
 ## Map
 
 - **`crates/core`** (`wackdepot-core`): all git logic — subprocess runner, porcelain-v2 status parsing, unified-diff parsing + hunk surgery, `git apply` staging/discard, commit, log, branches, fetch/pull/push, stash, clone. Pure and testable; no gpui.
-- **`crates/ui`** (`wackdepot-ui`): the gpui app — `theme.rs` (tokens), `glass.rs`/`frost.rs` (glass plates + backdrop-blur wrapper, ported from zeron), `input.rs` (TextInput, ported from gpui's example), `shell.rs` (window layout), changes/diff/history/pickers.
+- **`crates/ui`** (`wackdepot-ui`): the gpui app — `theme.rs` (tokens), `glass.rs`/`frost.rs` (glass plates + backdrop-blur, ported from zeron), `input.rs` (TextInput), `icons.rs` (embedded SVGs + `icon()`), `motion.rs` (menu_in/dialog_in/fade_in/slide_in/pulse), `settings.rs` (`wackdepot.json`), `watcher.rs` (notify), `state.rs` (Tab/Dialog/PopoverKind/BusyOp/Notice), `shell.rs` (entity: state + refresh pipeline + `run_op`), `render.rs` (`impl Render`: titlebar/rail/content/layers), `changes.rs`, `diffview.rs`, `history.rs`, `pickers.rs`, `dialogs.rs`, `ops.rs`, `welcome.rs`, `popover.rs` (frosted anchored helper), `lib.rs` (`run()`).
 - **`apps/wackdepot`**: thin binary (`main.rs`) + bundle metadata.
+- **`scripts/`**: `bundle.sh` (release build → `dist/WackDepot.app`, ad-hoc signed), `make_icon.py` (placeholder icon PNG, no deps). `assets/icon.icns` is generated and gitignored.
 
 ## Conventions
 
@@ -36,6 +37,7 @@ WackDepot is a native macOS Git GUI — a GitHub-Desktop-class app rebuilt in Ru
 | `cargo test --workspace` | All tests (core runs real git in tempdirs). |
 | `cargo clippy --workspace -- -D warnings` | Lint gate. |
 | `cargo fmt --all` | Format. |
+| `sh scripts/bundle.sh` | Build `dist/WackDepot.app` (release + icon + ad-hoc sign). |
 
 ## Ported code
 
