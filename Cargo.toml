@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/ui", "apps/wackdepot"]
+members = ["crates/core", "crates/syntax", "crates/ui", "apps/wackdepot"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 wackdepot-core = { path = "crates/core" }
 wackdepot-ui = { path = "crates/ui" }
+wackdepot-syntax = { path = "crates/syntax" }
 
 # gpui — zeronsh/zui fork (identical crate sources to Zed gpui, plus the
 # BackdropBlur primitive, per-edge EdgeFade, and the macOS 26+ fix that moves

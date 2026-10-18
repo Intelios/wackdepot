@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 wackdepot-core.workspace = true
+wackdepot-syntax.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 serde.workspace = true

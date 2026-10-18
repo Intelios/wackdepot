@@ -101,6 +101,7 @@ impl SidebarView {
         let mut row = div()
             .id(("commit", i))
             .h(px(ROW_H))
+            .w_full()
             .mx(px(2.))
             .flex()
             .items_center()

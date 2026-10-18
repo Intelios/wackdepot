@@ -12,12 +12,12 @@ use gpui::{
     ParentElement, Render, Styled, Window, div, prelude::*, px,
 };
 
-use crate::components::misc::empty_state;
 use crate::components::text_input;
 use crate::icons;
 use crate::model::{RepoEvent, RepoModel, Tab};
 use crate::motion::Motion;
 use crate::theme::{self, ActiveTheme, metrics};
+use crate::views::diff::DiffCard;
 use crate::views::sidebar::{self, SidebarView};
 use crate::views::titlebar::{TitlePopover, TitlebarView};
 use crate::views::welcome::Welcome;
@@ -38,6 +38,8 @@ pub fn run() {
             text_input::bind_keys(cx);
             sidebar::bind_keys(cx);
             backdrop::sync_reduce_motion(cx);
+            // The syntax set takes a moment to load; do it off the main thread.
+            std::thread::spawn(wackdepot_syntax::warm);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
@@ -69,6 +71,7 @@ pub struct Workspace {
     overlays: Entity<Overlays>,
     titlebar: Entity<TitlebarView>,
     sidebar: Entity<SidebarView>,
+    diff: Entity<DiffCard>,
     route: Route,
     /// The column's edge is being dragged.
     resizing: bool,
@@ -92,6 +95,7 @@ impl Workspace {
         let overlays = cx.new(|_| Overlays::new(model.clone()));
         let titlebar = cx.new(|cx| TitlebarView::new(model.clone(), overlays.clone(), cx));
         let sidebar = cx.new(|cx| SidebarView::new(model.clone(), overlays.clone(), cx));
+        let diff = cx.new(|cx| DiffCard::new(model.clone(), overlays.clone(), cx));
         cx.subscribe(&model, |ws: &mut Workspace, _, e: &RepoEvent, cx| match e {
             RepoEvent::Notice(n) => ws.overlays.update(cx, |o, cx| o.toast(n.clone(), cx)),
             RepoEvent::Confirm(a) => ws
@@ -117,6 +121,7 @@ impl Workspace {
             overlays,
             titlebar,
             sidebar,
+            diff,
             route: Route::Repo,
             resizing: false,
             backdrop,
@@ -152,12 +157,12 @@ impl Workspace {
     ) {
         prefs::update(cx, f);
         self.model.update(cx, |m, cx| m.load_diff(cx));
+        self.diff.update(cx, |d, cx| d.sync_prefs(cx));
         cx.notify();
     }
 
     fn repo_body(&mut self, mix: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = cx.theme().clone();
-        let selection = self.model.read(cx).selection.clone();
         let resizing = self.resizing;
         let grab = div()
             .id("resizer")
@@ -193,21 +198,6 @@ impl Workspace {
                     .opacity(if resizing { 1. } else { 0. })
                     .group_hover("resizer", |s| s.opacity(1.)),
             );
-        let card: gpui::AnyElement = match selection {
-            None => div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(empty_state("file-code", "Pick a file to see its changes"))
-                .into_any_element(),
-            Some(sel) => div()
-                .size_full()
-                .p(px(16.))
-                .text_color(t.text_dim)
-                .child(format!("{sel:?}"))
-                .into_any_element(),
-        };
         div()
             .flex_1()
             .min_h_0()
@@ -230,7 +220,7 @@ impl Workspace {
                     .border_1()
                     .border_color(t.border_bright.opacity(0.7))
                     .overflow_hidden()
-                    .child(card),
+                    .child(self.diff.clone()),
             )
             .into_any_element()
     }
