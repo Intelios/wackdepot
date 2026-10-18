@@ -8,8 +8,8 @@ pub mod prefs;
 pub mod window;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, ExternalPaths, FontWeight, IntoElement, ParentElement,
-    Render, Styled, Window, div, prelude::*, px,
+    App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle, FontWeight, IntoElement,
+    ParentElement, Render, Styled, Window, div, prelude::*, px,
 };
 
 use crate::components::text_input;
@@ -59,6 +59,9 @@ enum Route {
 
 /// Root view of the window.
 pub struct Workspace {
+    /// The root's focus: app actions and menu items dispatch through it
+    /// whenever no field is focused.
+    focus: FocusHandle,
     model: Entity<RepoModel>,
     overlays: Entity<Overlays>,
     titlebar: Entity<TitlebarView>,
@@ -99,7 +102,10 @@ impl Workspace {
             .sidebar_width
             .unwrap_or(metrics::SIDEBAR_W)
             .clamp(metrics::SIDEBAR_MIN, metrics::SIDEBAR_MAX);
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
         Self {
+            focus,
             model,
             overlays,
             titlebar,
@@ -178,6 +184,11 @@ impl Render for Workspace {
         if self.backdrop.needs_opaque(mix) {
             cx.defer_in(window, |ws, window, _| ws.backdrop.go_opaque(window));
         }
+        // A closed dialog or popover takes its focused field with it; hand
+        // focus back to the root so shortcuts and menus keep working.
+        if window.focused(cx).is_none() {
+            cx.defer_in(window, |ws, window, cx| ws.focus.focus(window, cx));
+        }
         let t = cx.theme().clone();
         let has_repo = self.model.read(cx).repo.is_some();
 
@@ -221,6 +232,7 @@ impl Render for Workspace {
             .text_color(t.text)
             .flex()
             .flex_col()
+            .track_focus(&self.focus)
             .on_drop(cx.listener(|ws, paths: &ExternalPaths, _, cx| ws.on_drop(paths, cx)))
             .on_action(cx.listener(|ws, _: &Dismiss, _, cx| ws.dismiss(cx)))
             .on_action(cx.listener(|ws, _: &OpenSettings, _, cx| {

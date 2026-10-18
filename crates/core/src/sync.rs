@@ -53,6 +53,12 @@ pub fn push(repo: &Path) -> Result<String, String> {
 /// [`push`], reporting progress as it goes.
 pub fn push_with_progress(repo: &Path, on: OnProgress) -> Result<String, String> {
     let g = Git::new(repo);
+    if g.run(["remote"])?.stdout.trim().is_empty() {
+        return Err(
+            "This repository has no remote to push to yet. Add one with `git remote add origin <url>`, then publish."
+                .into(),
+        );
+    }
     let has_upstream = g
         .try_run(["rev-parse", "--verify", "--quiet", "@{u}"])
         .map(|o| o.ok())
@@ -292,5 +298,15 @@ mod tests {
         );
         assert_eq!(name_from_url("git@x:a/c.git/").as_deref(), Some("c"));
         assert_eq!(name_from_url("https://x/").as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn push_without_a_remote_says_so() {
+        let (dir, _g) = crate::testutil::temp_repo();
+        crate::testutil::write_file(dir.path(), "a.txt", "1\n");
+        crate::stage::stage_all(dir.path()).unwrap();
+        crate::commit::commit(dir.path(), "init", "").unwrap();
+        let err = push(dir.path()).unwrap_err();
+        assert!(err.contains("no remote"), "{err}");
     }
 }
