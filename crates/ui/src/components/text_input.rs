@@ -236,6 +236,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let offset = self.clamp(offset..offset).start;
         self.selected = offset..offset;
         self.reversed = false;
         cx.notify();
@@ -274,6 +275,7 @@ impl TextInput {
     }
 
     fn replace(&mut self, range: Range<usize>, text: &str, coalesce: bool, cx: &mut Context<Self>) {
+        let range = self.clamp(range);
         self.checkpoint(coalesce);
         let text = if self.mode == Mode::Single {
             text.replace(['\n', '\r'], " ")
@@ -288,6 +290,20 @@ impl TextInput {
         self.goal_x = None;
         cx.emit(TextInputEvent::Changed);
         cx.notify();
+    }
+
+    /// Keep a range inside the text and on character boundaries — the IME
+    /// and stale layouts can hand us anything.
+    fn clamp(&self, range: Range<usize>) -> Range<usize> {
+        let floor = |mut i: usize| {
+            i = i.min(self.content.len());
+            while !self.content.is_char_boundary(i) {
+                i -= 1;
+            }
+            i
+        };
+        let start = floor(range.start);
+        start..floor(range.end).max(start)
     }
 
     fn prev_grapheme(&self, offset: usize) -> usize {
@@ -714,7 +730,7 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<String> {
-        let range = self.range_from_utf16(&range);
+        let range = self.clamp(self.range_from_utf16(&range));
         actual.replace(self.range_to_utf16(&range));
         Some(self.content[range].to_string())
     }
@@ -767,6 +783,7 @@ impl EntityInputHandler for TextInput {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked.clone())
             .unwrap_or(self.selected.clone());
+        let range = self.clamp(range);
         self.content.replace_range(range.clone(), text);
         self.marked = (!text.is_empty()).then(|| range.start..range.start + text.len());
         self.selected = new_selected

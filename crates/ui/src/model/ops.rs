@@ -527,6 +527,19 @@ impl RepoModel {
 
     // ── Open in… ───────────────────────────────────────────────────────
 
+    /// Show one file of the repo in Finder.
+    pub fn reveal(&mut self, path: &str, cx: &mut Context<Self>) {
+        if let Some(repo) = &self.repo
+            && std::process::Command::new("open")
+                .arg("-R")
+                .arg(repo.join(path))
+                .spawn()
+                .is_err()
+        {
+            self.notice("Couldn't open Finder.", NoticeKind::Error, cx);
+        }
+    }
+
     pub fn open_in_finder(&mut self, cx: &mut Context<Self>) {
         if let Some(p) = &self.repo
             && std::process::Command::new("open").arg(p).spawn().is_err()

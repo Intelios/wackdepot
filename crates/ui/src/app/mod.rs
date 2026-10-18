@@ -12,11 +12,13 @@ use gpui::{
     ParentElement, Render, Styled, Window, div, prelude::*, px,
 };
 
+use crate::components::misc::empty_state;
 use crate::components::text_input;
 use crate::icons;
 use crate::model::{RepoEvent, RepoModel, Tab};
 use crate::motion::Motion;
 use crate::theme::{self, ActiveTheme, metrics};
+use crate::views::sidebar::{self, SidebarView};
 use crate::views::titlebar::{TitlePopover, TitlebarView};
 use crate::views::welcome::Welcome;
 
@@ -34,6 +36,7 @@ pub fn run() {
             theme::init(cx, &input);
             actions::register(cx);
             text_input::bind_keys(cx);
+            sidebar::bind_keys(cx);
             backdrop::sync_reduce_motion(cx);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
@@ -65,7 +68,10 @@ pub struct Workspace {
     model: Entity<RepoModel>,
     overlays: Entity<Overlays>,
     titlebar: Entity<TitlebarView>,
+    sidebar: Entity<SidebarView>,
     route: Route,
+    /// The column's edge is being dragged.
+    resizing: bool,
     backdrop: Backdrop,
     motion: Motion,
     sidebar_width: f32,
@@ -85,6 +91,7 @@ impl Workspace {
         let model = cx.new(RepoModel::new);
         let overlays = cx.new(|_| Overlays::new(model.clone()));
         let titlebar = cx.new(|cx| TitlebarView::new(model.clone(), overlays.clone(), cx));
+        let sidebar = cx.new(|cx| SidebarView::new(model.clone(), overlays.clone(), cx));
         cx.subscribe(&model, |ws: &mut Workspace, _, e: &RepoEvent, cx| match e {
             RepoEvent::Notice(n) => ws.overlays.update(cx, |o, cx| o.toast(n.clone(), cx)),
             RepoEvent::Confirm(a) => ws
@@ -109,7 +116,9 @@ impl Workspace {
             model,
             overlays,
             titlebar,
+            sidebar,
             route: Route::Repo,
+            resizing: false,
             backdrop,
             motion: Motion::default(),
             sidebar_width,
@@ -148,22 +157,70 @@ impl Workspace {
 
     fn repo_body(&mut self, mix: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
         let t = cx.theme().clone();
-        let tab = self.model.read(cx).tab;
+        let selection = self.model.read(cx).selection.clone();
+        let resizing = self.resizing;
+        let grab = div()
+            .id("resizer")
+            .w(px(metrics::GAP))
+            .h_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_col_resize()
+            .group("resizer")
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|ws, _, _, cx| {
+                    ws.resizing = true;
+                    cx.notify();
+                }),
+            )
+            .on_click(cx.listener(|ws, e: &gpui::ClickEvent, _, cx| {
+                // Double-click puts the column back to its default width.
+                if e.click_count() == 2 {
+                    ws.sidebar_width = metrics::SIDEBAR_W;
+                    prefs::update(cx, |s| s.sidebar_width = None);
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .w(px(4.))
+                    .h(px(44.))
+                    .rounded_full()
+                    .bg(t.accent.opacity(0.75))
+                    .opacity(if resizing { 1. } else { 0. })
+                    .group_hover("resizer", |s| s.opacity(1.)),
+            );
+        let card: gpui::AnyElement = match selection {
+            None => div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(empty_state("file-code", "Pick a file to see its changes"))
+                .into_any_element(),
+            Some(sel) => div()
+                .size_full()
+                .p(px(16.))
+                .text_color(t.text_dim)
+                .child(format!("{sel:?}"))
+                .into_any_element(),
+        };
         div()
             .flex_1()
             .min_h_0()
             .flex()
-            .gap(px(metrics::GAP))
             .child(
                 div()
                     .w(px(self.sidebar_width))
                     .flex_none()
                     .rounded(px(metrics::RADIUS_CARD))
                     .bg(t.column(mix))
-                    .p(px(10.))
-                    .text_color(t.text_dim)
-                    .child(format!("{tab:?}")),
+                    .child(self.sidebar.clone()),
             )
+            .child(grab)
             .child(
                 div()
                     .flex_1()
@@ -171,7 +228,9 @@ impl Workspace {
                     .rounded(px(metrics::RADIUS_CARD))
                     .bg(t.bg)
                     .border_1()
-                    .border_color(t.border_bright.opacity(0.7)),
+                    .border_color(t.border_bright.opacity(0.7))
+                    .overflow_hidden()
+                    .child(card),
             )
             .into_any_element()
     }
@@ -234,6 +293,34 @@ impl Render for Workspace {
             .flex_col()
             .track_focus(&self.focus)
             .on_drop(cx.listener(|ws, paths: &ExternalPaths, _, cx| ws.on_drop(paths, cx)))
+            .on_mouse_move(cx.listener(|ws, e: &gpui::MouseMoveEvent, _, cx| {
+                if ws.resizing {
+                    if e.pressed_button != Some(gpui::MouseButton::Left) {
+                        ws.resizing = false;
+                        let w = ws.sidebar_width;
+                        prefs::update(cx, |s| s.sidebar_width = Some(w));
+                    } else {
+                        let x = f32::from(e.position.x) - metrics::GAP;
+                        ws.sidebar_width = x.clamp(metrics::SIDEBAR_MIN, metrics::SIDEBAR_MAX);
+                    }
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|ws, _, _, cx| {
+                    if ws.resizing {
+                        ws.resizing = false;
+                        let w = ws.sidebar_width;
+                        prefs::update(cx, |s| s.sidebar_width = Some(w));
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_action(cx.listener(|ws, _: &Commit, _, cx| {
+                let composer = ws.sidebar.read(cx).composer.clone();
+                composer.update(cx, |c, cx| c.commit(cx));
+            }))
             .on_action(cx.listener(|ws, _: &Dismiss, _, cx| ws.dismiss(cx)))
             .on_action(cx.listener(|ws, _: &OpenSettings, _, cx| {
                 ws.route = if ws.route == Route::Settings {

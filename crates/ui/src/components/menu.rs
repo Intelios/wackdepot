@@ -21,6 +21,8 @@ pub struct Popover {
     id: ElementId,
     width: f32,
     corner: Anchor,
+    /// Anchor at a window point (context menus) instead of the parent.
+    at: Option<gpui::Point<gpui::Pixels>>,
     content: Vec<AnyElement>,
     on_dismiss: Option<Handler>,
     pad: f32,
@@ -31,6 +33,7 @@ pub fn popover(id: impl Into<ElementId>) -> Popover {
         id: id.into(),
         width: 280.0,
         corner: Anchor::TopLeft,
+        at: None,
         content: Vec::new(),
         on_dismiss: None,
         pad: 5.0,
@@ -47,6 +50,12 @@ impl Popover {
     /// top-left, opening down and right).
     pub fn corner(mut self, c: Anchor) -> Self {
         self.corner = c;
+        self
+    }
+
+    /// Open at a window position (a right-click), not at the parent.
+    pub fn at(mut self, p: gpui::Point<gpui::Pixels>) -> Self {
+        self.at = Some(p);
         self
     }
 
@@ -89,6 +98,7 @@ impl RenderOnce for Popover {
         let rise = (1.0 - shown) * 4.0;
         let dismiss = self.on_dismiss;
         let opens_up = matches!(self.corner, Anchor::BottomLeft | Anchor::BottomRight);
+        let at = self.at;
         let card = div()
             .id(self.id)
             .w(px(self.width))
@@ -109,21 +119,32 @@ impl RenderOnce for Popover {
                 }
             })
             .children(self.content);
+        let mut anchor = anchored()
+            .anchor(self.corner)
+            .snap_to_window_with_margin(px(8.));
+        if let Some(p) = at {
+            anchor = anchor
+                .position(p)
+                .position_mode(gpui::AnchoredPositionMode::Window);
+        }
         deferred(
-            anchored()
-                .anchor(self.corner)
-                .snap_to_window_with_margin(px(8.))
-                .child(
-                    div()
-                        .relative()
-                        .top(px(if opens_up { -6.0 + rise } else { 6.0 - rise }))
-                        .opacity(shown.clamp(0.0, 1.0))
-                        .child(frosted(
-                            metrics::RADIUS_POPOVER,
-                            metrics::FROST_BLUR * shown.clamp(0.0, 1.0),
-                            card,
-                        )),
-                ),
+            anchor.child(
+                div()
+                    .relative()
+                    .top(px(if at.is_some() {
+                        -rise
+                    } else if opens_up {
+                        -6.0 + rise
+                    } else {
+                        6.0 - rise
+                    }))
+                    .opacity(shown.clamp(0.0, 1.0))
+                    .child(frosted(
+                        metrics::RADIUS_POPOVER,
+                        metrics::FROST_BLUR * shown.clamp(0.0, 1.0),
+                        card,
+                    )),
+            ),
         )
         .priority(2)
     }

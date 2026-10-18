@@ -179,9 +179,10 @@ impl EventEmitter<RepoEvent> for RepoModel {}
 
 impl RepoModel {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let last = prefs::get(cx)
-            .last_repo
-            .clone()
+        // `WACKDEPOT_OPEN=<path>` opens a repo at launch (dev and scripting).
+        let last = std::env::var_os("WACKDEPOT_OPEN")
+            .map(PathBuf::from)
+            .or_else(|| prefs::get(cx).last_repo.clone())
             .filter(|p| p.exists() && wackdepot_core::repo::is_repo(p));
         let mut model = Self {
             repo: None,
