@@ -9,6 +9,7 @@ use gpui::{
 };
 
 use crate::frost::{self, MENU_BLUR};
+use crate::motion;
 use crate::theme::Theme;
 
 /// A frosted popover card anchored to its parent element. The caller wraps
@@ -34,7 +35,8 @@ where
         .border_color(theme.border)
         .shadow_lg()
         .p(px(6.))
-        .children(children.into_iter().map(IntoElement::into_element));
+        .children(children.into_iter().map(IntoElement::into_element))
+        .on_mouse_down_out(move |_, window, cx| on_dismiss(window, cx));
 
     deferred(
         anchored()
@@ -44,7 +46,7 @@ where
                 10.0,
                 MENU_BLUR,
                 theme.frost,
-                card.on_mouse_down_out(move |_, window, cx| on_dismiss(window, cx)),
+                motion::menu_in("popover", card),
             )),
     )
     .priority(1)

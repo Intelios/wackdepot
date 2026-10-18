@@ -46,6 +46,8 @@ pub enum Dialog {
     NewRepo,
     /// Destructive-action confirmation.
     Confirm(ConfirmAction),
+    /// Appearance + editor preferences.
+    Settings,
 }
 
 /// What a `Confirm` dialog will do when accepted. Display copy derives from

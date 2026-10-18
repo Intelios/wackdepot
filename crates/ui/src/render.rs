@@ -1,11 +1,14 @@
 //! `impl Render for Shell`: the titlebar strip, glass rail, content pane,
 //! dialogs and notices composed over the window blur.
 
-use gpui::{Context, Div, Render, Stateful, Styled, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, Context, Div, ExternalPaths, Render, Stateful, Styled, Window, div, prelude::*, px,
+};
 
 use crate::icons::icon;
+use crate::motion;
 use crate::shell::Shell;
-use crate::state::{BusyOp, PopoverKind, Selected, Tab};
+use crate::state::{BusyOp, Dialog, PopoverKind, Selected, Tab};
 use crate::theme::{self, Theme};
 
 /// A small pill button in the titlebar or rail.
@@ -84,7 +87,7 @@ impl Shell {
             cx,
         );
 
-        // Content side: branch + sync controls.
+        // Content side: branch + sync controls + settings gear.
         let status = self.repo.status.as_ref();
         let ahead = status.map(|s| s.ahead).unwrap_or(0);
         let behind = status.map(|s| s.behind).unwrap_or(0);
@@ -119,6 +122,13 @@ impl Shell {
             .hover(|s| s.bg(theme.accent.opacity(0.12)))
             .child(icon("git-branch").size_4())
             .child(self.branch_label());
+
+        let gear = pill_button(theme, div().id("settings-gear"), false)
+            .child(icon("settings").size_4())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.dialog = Some(Dialog::Settings);
+                cx.notify();
+            }));
 
         let mut content_side = div()
             .h_full()
@@ -210,14 +220,22 @@ impl Shell {
                                 .when(self.popover == Some(PopoverKind::SyncMenu), |el| {
                                     el.child(self.sync_menu(cx, theme))
                                 }),
-                        ),
+                        )
+                        .child(gear),
                 );
         } else {
             content_side = content_side.child(div()).child(
                 div()
-                    .text_sm()
-                    .text_color(theme.text_faint)
-                    .child("WackDepot"),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.text_faint)
+                            .child("WackDepot"),
+                    )
+                    .child(gear),
             );
         }
 
@@ -272,9 +290,11 @@ impl Shell {
                     })),
             );
 
-        let body: Div = match self.tab {
-            Tab::Changes => self.changes_view(cx, theme),
-            Tab::History => self.history_view(cx, theme),
+        let body: AnyElement = match self.tab {
+            Tab::Changes => motion::slide_in("changes-pane", self.changes_view(cx, theme), -10.0)
+                .into_any_element(),
+            Tab::History => motion::slide_in("history-pane", self.history_view(cx, theme), -10.0)
+                .into_any_element(),
         };
 
         div()
@@ -287,7 +307,27 @@ impl Shell {
             .flex()
             .flex_col()
             .child(tabs)
-            .child(body)
+            .child(
+                // Repo folders dropped on the rail open as repositories.
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                        for p in paths.paths() {
+                            if wackdepot_core::repo::is_repo(p) {
+                                this.open_repo(p.clone(), cx);
+                            } else {
+                                this.notify_error(
+                                    format!("{} isn't a git repository.", p.display()),
+                                    cx,
+                                );
+                            }
+                        }
+                    }))
+                    .child(body),
+            )
     }
 
     fn content(&self, cx: &mut Context<Self>, theme: &Theme) -> Div {
@@ -314,7 +354,35 @@ impl Render for Shell {
         let theme = self.theme(window);
 
         let mut root = div()
+            // App actions — keymap dispatch lands on the root's path.
             .on_action(cx.listener(|this, _: &crate::Dismiss, _, cx| this.dismiss(cx)))
+            .on_action(cx.listener(|this, _: &crate::ShowChanges, _, cx| {
+                this.tab = Tab::Changes;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::ShowHistory, _, cx| {
+                this.tab = Tab::History;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::ToggleBranches, _, cx| {
+                this.popover = match this.popover {
+                    Some(PopoverKind::BranchPicker) => None,
+                    _ => Some(PopoverKind::BranchPicker),
+                };
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::DoFetch, _, cx| this.fetch(cx)))
+            .on_action(cx.listener(|this, _: &crate::DoPull, _, cx| this.pull(cx)))
+            .on_action(cx.listener(|this, _: &crate::DoPush, _, cx| this.push(cx)))
+            .on_action(cx.listener(|this, _: &crate::DoCommit, _, cx| this.do_commit(cx)))
+            .on_action(cx.listener(|this, _: &crate::Refresh, _, cx| {
+                this.request_refresh(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::OpenSettings, _, cx| {
+                this.dialog = Some(Dialog::Settings);
+                cx.notify();
+            }))
+            .on_action(|_: &crate::CloseWindow, window, _| window.remove_window())
             .size_full()
             .font_family(".SystemUIFont")
             .text_color(theme.text)

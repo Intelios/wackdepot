@@ -70,8 +70,12 @@ pub struct Shell {
     /// The repo's git user identity for the commit box.
     pub author_name: String,
     pub author_email: String,
+    /// Settings ▸ editor app name ("WackCode", "Zed", …).
+    pub editor_app: Entity<TextInput>,
     /// Whether the tip commit is unpushed (undo is safe to offer).
     pub tip_is_unpushed: bool,
+    /// Last geometry written to settings — only save on change.
+    last_saved_geo: Option<settings::WindowGeo>,
 }
 
 /// Everything we snapshot from git for the open repo.
@@ -95,6 +99,7 @@ pub struct SelectedDiff {
 impl Shell {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let settings = settings::load();
+        let saved_editor = settings.editor_app.clone().unwrap_or_default();
         let mk = |placeholder: &str, cx: &mut Context<Shell>| {
             cx.new(|cx| TextInput::new(placeholder.to_string(), cx))
         };
@@ -130,6 +135,13 @@ impl Shell {
             new_repo_dir: mk("Local folder", cx),
             branch_name: mk("Branch name", cx),
             branch_base: mk("HEAD", cx),
+            editor_app: {
+                let e = mk("WackCode", cx);
+                if !saved_editor.is_empty() {
+                    e.update(cx, |i, cx| i.set_content(&saved_editor, cx));
+                }
+                e
+            },
             stashes: Vec::new(),
             collapsed: HashSet::new(),
             titlebar_should_move: false,
@@ -137,6 +149,7 @@ impl Shell {
             author_name: String::new(),
             author_email: String::new(),
             tip_is_unpushed: false,
+            last_saved_geo: None,
         };
         if shell.active.is_some() {
             shell.start_watcher();
@@ -472,6 +485,32 @@ impl Shell {
             }),
             None => "—".into(),
         }
+    }
+
+    /// Persist window geometry when it changes (throttled to real moves).
+    pub fn observe_geometry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.observe_window_bounds(window, |this, window, cx| {
+            let b = window.bounds();
+            let geo = settings::WindowGeo {
+                x: b.origin.x.into(),
+                y: b.origin.y.into(),
+                w: b.size.width.into(),
+                h: b.size.height.into(),
+            };
+            let changed = this.last_saved_geo.is_none_or(|g| {
+                (g.x - geo.x).abs() > 1.
+                    || (g.y - geo.y).abs() > 1.
+                    || (g.w - geo.w).abs() > 1.
+                    || (g.h - geo.h).abs() > 1.
+            });
+            if changed {
+                this.last_saved_geo = Some(geo);
+                this.settings.window = Some(geo);
+                settings::save(&this.settings);
+            }
+            cx.notify();
+        })
+        .detach();
     }
 
     /// Dismiss the topmost layer: dialog → popover → notice.

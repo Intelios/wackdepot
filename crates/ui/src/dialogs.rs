@@ -5,6 +5,7 @@ use gpui::{AnyElement, Context, Div, Styled, div, prelude::*, px};
 
 use crate::frost::{self, MENU_BLUR};
 use crate::icons::icon;
+use crate::motion;
 use crate::ops::PickTarget;
 use crate::shell::Shell;
 use crate::state::{ConfirmAction, Dialog, Notice};
@@ -61,6 +62,7 @@ impl Shell {
             Dialog::CloneRepo => self.clone_card(cx, theme).into_any_element(),
             Dialog::NewRepo => self.new_repo_card(cx, theme).into_any_element(),
             Dialog::Confirm(action) => self.confirm_card(cx, theme, action).into_any_element(),
+            Dialog::Settings => self.settings_card(cx, theme).into_any_element(),
         };
 
         div()
@@ -233,44 +235,47 @@ impl Shell {
             10.0,
             MENU_BLUR,
             theme.frost,
-            div()
-                .id("notice")
-                .max_w(px(360.))
-                .rounded_lg()
-                .bg(theme.menu)
-                .border_1()
-                .border_color(if notice.is_error {
-                    theme.danger
-                } else {
-                    theme.accent
-                })
-                .shadow_lg()
-                .px_3()
-                .py_2()
-                .flex()
-                .items_center()
-                .gap_2()
-                .cursor_pointer()
-                .child(
-                    icon(if notice.is_error { "warning" } else { "check" }).text_color(
-                        if notice.is_error {
-                            theme.danger
-                        } else {
-                            theme.accent
-                        },
-                    ),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .text_sm()
-                        .text_color(theme.text)
-                        .child(notice.text.clone()),
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.notice = None;
-                    cx.notify();
-                })),
+            motion::dialog_in(
+                ("notice-anim", notice.id),
+                div()
+                    .id("notice")
+                    .max_w(px(360.))
+                    .rounded_lg()
+                    .bg(theme.menu)
+                    .border_1()
+                    .border_color(if notice.is_error {
+                        theme.danger
+                    } else {
+                        theme.accent
+                    })
+                    .shadow_lg()
+                    .px_3()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .child(
+                        icon(if notice.is_error { "warning" } else { "check" }).text_color(
+                            if notice.is_error {
+                                theme.danger
+                            } else {
+                                theme.accent
+                            },
+                        ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_sm()
+                            .text_color(theme.text)
+                            .child(notice.text.clone()),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.notice = None;
+                        cx.notify();
+                    })),
+            ),
         ))
     }
 
@@ -281,8 +286,106 @@ impl Shell {
             .top_0()
             .left_0()
             .right_0()
-            .h_px()
-            .bg(theme.accent.opacity(0.6))
+            .child(motion::pulse(
+                "busy-pulse",
+                div().h(px(2.)).bg(theme.accent.opacity(0.6)),
+            ))
+    }
+
+    /// Appearance + editor preferences.
+    fn settings_card(&self, cx: &mut Context<Self>, theme: &Theme) -> Div {
+        use crate::settings::AppearanceMode::*;
+        let current = self.settings.appearance;
+        let mode_btn = |id: &'static str,
+                        label: &'static str,
+                        mode: crate::settings::AppearanceMode,
+                        cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .h_7()
+                .px_3()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .text_sm()
+                .bg(if current == mode {
+                    theme.accent
+                } else {
+                    theme.elevated
+                })
+                .text_color(if current == mode {
+                    theme.on_accent
+                } else {
+                    theme.text_soft
+                })
+                .cursor_pointer()
+                .occlude()
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings.appearance = mode;
+                    crate::settings::save(&this.settings);
+                    cx.notify();
+                }))
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(div().text_lg().text_color(theme.text).child("Settings"))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_dim)
+                            .child("Appearance"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_1()
+                            .child(mode_btn("mode-system", "System", System, cx))
+                            .child(mode_btn("mode-dark", "Dark", Dark, cx))
+                            .child(mode_btn("mode-light", "Light", Light, cx)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_dim)
+                            .child("Open in Editor — macOS app name"),
+                    )
+                    .child(
+                        div()
+                            .rounded_md()
+                            .bg(theme.input)
+                            .border_1()
+                            .border_color(theme.border)
+                            .px_2()
+                            .py_1()
+                            .text_sm()
+                            .child(self.editor_app.clone()),
+                    ),
+            )
+            .child(div().flex().justify_end().gap_2().child(
+                button(theme, "settings-save", "Done", BtnKind::Primary).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        let app = this.editor_app.read(cx).content().trim().to_string();
+                        this.settings.editor_app = (!app.is_empty()).then_some(app);
+                        crate::settings::save(&this.settings);
+                        this.dialog = None;
+                        cx.notify();
+                    },
+                )),
+            ))
     }
 }
 
