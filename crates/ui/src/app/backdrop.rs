@@ -72,6 +72,35 @@ impl Backdrop {
         }
     }
 
+    /// Settings › Appearance changed the backdrop (or Reduce Transparency
+    /// changed): switch between glass and solid in place.
+    pub fn reconfigure(&mut self, window: &mut Window, s: &Settings) {
+        let want_solid = s.backdrop == BackdropPref::Solid || accessibility::reduce_transparency();
+        match (&self.mode, want_solid) {
+            (Mode::Solid, false) => {
+                self.mode = NativeGlass::install(window)
+                    .map(Mode::Glass)
+                    .unwrap_or(Mode::Blur);
+                if let Mode::Glass(g) = &self.mode {
+                    g.set_visible(self.active);
+                }
+                if self.active {
+                    window.set_background_appearance(self.see_through());
+                    self.opaque = false;
+                } else {
+                    window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+                    self.opaque = true;
+                }
+            }
+            (Mode::Glass(_) | Mode::Blur, true) => {
+                self.mode = Mode::Solid;
+                window.set_background_appearance(WindowBackgroundAppearance::Opaque);
+                self.opaque = true;
+            }
+            _ => {}
+        }
+    }
+
     /// 1 with the glass fully showing, 0 when the shell is opaque.
     pub fn mix(&self, motion: &mut Motion) -> f32 {
         let see_through = self.active && !matches!(self.mode, Mode::Solid);

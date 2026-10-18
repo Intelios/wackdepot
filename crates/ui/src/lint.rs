@@ -1,5 +1,5 @@
 //! Source-level guards. Colours come only from `theme/` (AGENTS.md: theme
-//! tokens only); the legacy UI is exempt until it is deleted.
+//! tokens only).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
         let path = entry.expect("dir entry").path();
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name != "legacy" && name != "theme" {
+            if name != "theme" {
                 sources(&path, out);
             }
         } else if path.extension().is_some_and(|e| e == "rs") {
@@ -32,7 +32,16 @@ fn colours_come_only_from_the_theme() {
         let text = fs::read_to_string(&file).expect("read source");
         for (n, line) in text.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
-            if banned.iter().any(|b| code.contains(b)) {
+            // A call, not part of a longer name (`to_hsla(` is fine).
+            let called = |b: &str| {
+                code.match_indices(b).any(|(i, _)| {
+                    !code[..i]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                })
+            };
+            if banned.iter().any(|b| called(b)) {
                 hits.push(format!("{}:{}: {}", file.display(), n + 1, line.trim()));
             }
         }

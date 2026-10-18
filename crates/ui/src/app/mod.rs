@@ -18,6 +18,7 @@ use crate::model::{RepoEvent, RepoModel, Tab};
 use crate::motion::Motion;
 use crate::theme::{self, ActiveTheme, metrics};
 use crate::views::diff::DiffCard;
+use crate::views::settings::{SettingsEvent, SettingsNav, SettingsPage};
 use crate::views::sidebar::{self, SidebarView};
 use crate::views::titlebar::{TitlePopover, TitlebarView};
 use crate::views::welcome::Welcome;
@@ -72,6 +73,7 @@ pub struct Workspace {
     titlebar: Entity<TitlebarView>,
     sidebar: Entity<SidebarView>,
     diff: Entity<DiffCard>,
+    settings: Entity<SettingsPage>,
     route: Route,
     /// The column's edge is being dragged.
     resizing: bool,
@@ -96,6 +98,23 @@ impl Workspace {
         let titlebar = cx.new(|cx| TitlebarView::new(model.clone(), overlays.clone(), cx));
         let sidebar = cx.new(|cx| SidebarView::new(model.clone(), overlays.clone(), cx));
         let diff = cx.new(|cx| DiffCard::new(model.clone(), overlays.clone(), cx));
+        let settings = cx.new(SettingsPage::new);
+        cx.subscribe_in(
+            &settings,
+            window,
+            |ws: &mut Workspace, _, e: &SettingsEvent, window, cx| match e {
+                SettingsEvent::Backdrop => {
+                    let s = prefs::get(cx).clone();
+                    ws.backdrop.reconfigure(window, &s);
+                    cx.notify();
+                }
+                SettingsEvent::Close => {
+                    ws.route = Route::Repo;
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
         cx.subscribe(&model, |ws: &mut Workspace, _, e: &RepoEvent, cx| match e {
             RepoEvent::Notice(n) => ws.overlays.update(cx, |o, cx| o.toast(n.clone(), cx)),
             RepoEvent::Confirm(a) => ws
@@ -122,6 +141,7 @@ impl Workspace {
             titlebar,
             sidebar,
             diff,
+            settings,
             route: Route::Repo,
             resizing: false,
             backdrop,
@@ -244,15 +264,30 @@ impl Render for Workspace {
         let body = if self.route == Route::Settings {
             div()
                 .flex_1()
-                .rounded(px(metrics::RADIUS_CARD))
-                .bg(t.bg)
-                .border_1()
-                .border_color(t.border_bright.opacity(0.7))
+                .min_h_0()
                 .flex()
-                .items_center()
-                .justify_center()
-                .text_color(t.text_dim)
-                .child("Settings")
+                .gap(px(metrics::GAP))
+                .child(
+                    div()
+                        .w(px(self.sidebar_width))
+                        .flex_none()
+                        .rounded(px(metrics::RADIUS_CARD))
+                        .bg(t.column(mix))
+                        .child(SettingsNav {
+                            page: self.settings.clone(),
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .rounded(px(metrics::RADIUS_CARD))
+                        .bg(t.bg)
+                        .border_1()
+                        .border_color(t.border_bright.opacity(0.7))
+                        .overflow_hidden()
+                        .child(self.settings.clone()),
+                )
                 .into_any_element()
         } else if has_repo {
             self.repo_body(mix, cx)

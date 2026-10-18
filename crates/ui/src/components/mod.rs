@@ -11,5 +11,6 @@ pub mod menu;
 pub mod misc;
 pub mod pill_track;
 pub mod seam;
+pub mod slider;
 pub mod spinner;
 pub mod text_input;

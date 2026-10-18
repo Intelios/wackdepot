@@ -183,6 +183,11 @@ impl RenderOnce for PillTrack {
             }
             track = track.child(seg);
         }
-        track
+        if self.equal {
+            track.into_any_element()
+        } else {
+            // Sized to its labels: don't let a column parent stretch it.
+            div().flex().child(track).into_any_element()
+        }
     }
 }

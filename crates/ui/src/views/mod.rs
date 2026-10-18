@@ -2,6 +2,7 @@
 
 pub mod dialogs;
 pub mod diff;
+pub mod settings;
 pub mod sidebar;
 pub mod time;
 pub mod titlebar;

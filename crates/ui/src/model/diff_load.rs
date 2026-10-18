@@ -78,10 +78,7 @@ fn highlight_cached(path: &str, text: &str) -> Option<Arc<Vec<LineSpans>>> {
     Some(hl)
 }
 
-fn highlight_versions(
-    path: &str,
-    v: blob::Versions,
-) -> (Option<Highlight>, Option<Highlight>) {
+fn highlight_versions(path: &str, v: blob::Versions) -> (Option<Highlight>, Option<Highlight>) {
     (
         v.old.as_deref().and_then(|t| highlight_cached(path, t)),
         v.new.as_deref().and_then(|t| highlight_cached(path, t)),

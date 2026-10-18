@@ -48,3 +48,13 @@ pub const PRESETS: &[Preset] = &[
         background: "#111111",
     },
 ];
+
+impl Preset {
+    /// `(background, accent)` for drawing the preset's swatch.
+    pub fn swatch(&self) -> (gpui::Hsla, gpui::Hsla) {
+        let c = |hex: &str| {
+            super::color::to_hsla(super::color::parse_hex(hex).unwrap_or_default(), 1.0)
+        };
+        (c(self.background), c(self.accent))
+    }
+}

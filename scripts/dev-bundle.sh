@@ -2,7 +2,7 @@
 # Debug build wrapped in "WackDepot Dev.app" (bundle id com.wackdepot.app.dev)
 # so it gets a real app identity for screenshots and UI checks, then launches
 # it. Extra arguments are passed as KEY=VALUE environment for the app, e.g.
-#   sh scripts/dev-bundle.sh WACKDEPOT_UI=next
+#   sh scripts/dev-bundle.sh WACKDEPOT_OPEN=~/code/some-repo WACKDEPOT_SLOWMO=8
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
