@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/ui", "apps/wackdepot"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+wackdepot-core = { path = "crates/core" }
+wackdepot-ui = { path = "crates/ui" }
+
+# gpui — zeronsh/zui fork (identical crate sources to Zed gpui, plus the
+# BackdropBlur primitive, per-edge EdgeFade, and the macOS 26+ fix that moves
+# window blur to UnderWindowBackground; upstream window blur is dead there).
+# Pinned to the rev zeron builds on.
+gpui = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54" }
+gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54", features = [
+    "wayland",
+    "x11",
+    "font-kit",
+    "runtime_shaders",
+] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-segmentation = "1"
+notify = "7"
+tempfile = "3"
+
+[profile.dev]
+# gpui is slow unoptimized; match zed/zeron's approach for deps
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

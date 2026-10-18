@@ -1,0 +1,6 @@
+/target
+**/.DS_Store
+/dist
+*.app
+/tmp
+todo.md
