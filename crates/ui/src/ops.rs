@@ -470,20 +470,32 @@ impl Shell {
         let Some(p) = self.active.clone() else {
             return;
         };
-        let app = self
-            .settings
-            .editor_app
-            .clone()
-            .unwrap_or_else(|| "WackCode".into());
+        // First app that exists in /Applications wins.
+        let wanted = self.settings.editor_app.clone();
+        let candidates: Vec<String> = [
+            wanted,
+            Some("Zed".into()),
+            Some("Visual Studio Code".into()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let app = candidates
+            .iter()
+            .find(|a| std::path::Path::new(&format!("/Applications/{a}.app")).exists());
+        let Some(app) = app else {
+            self.notify_error("No editor found — set one in Settings (⌘,).".to_string(), cx);
+            return;
+        };
         let ok = std::process::Command::new("open")
             .arg("-a")
-            .arg(&app)
+            .arg(app)
             .arg(&p)
             .spawn()
             .is_ok();
         self.popover = None;
         if !ok {
-            self.notify_error(format!("Couldn't open {app} — is it installed?"), cx);
+            self.notify_error(format!("Couldn't open {app}."), cx);
         } else {
             cx.notify();
         }
