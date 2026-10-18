@@ -3,9 +3,13 @@
 //! default until cutover. `WACKDEPOT_UI=next` runs the new one.
 
 pub mod app;
+pub mod components;
 pub mod icons;
 mod legacy;
+pub mod motion;
+mod native;
 pub mod settings;
+pub mod theme;
 mod watcher;
 
 #[cfg(test)]

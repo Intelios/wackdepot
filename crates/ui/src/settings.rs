@@ -16,7 +16,7 @@ pub enum AppearanceMode {
     Light,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
     /// Repositories the user added, in sidebar order (paths, not copies).
     #[serde(default)]
@@ -32,9 +32,59 @@ pub struct Settings {
     /// Window geometry (points) restored between launches.
     #[serde(default)]
     pub window: Option<WindowGeo>,
-    /// User-set accent, reserved for a future appearance picker. Hex RRGGBB.
+    /// Accent colour (`#rrggbb`); `None` is the WackDepot lime.
     #[serde(default)]
     pub accent_hex: Option<String>,
+    /// Background colour (`#rrggbb`); `None` is the default olive-black.
+    #[serde(default)]
+    pub background_hex: Option<String>,
+    /// What sits behind the window: native glass or a solid colour.
+    #[serde(default)]
+    pub backdrop: Backdrop,
+    /// How much of the shell is tint over the glass, 0–90.
+    #[serde(default = "default_glass_tint")]
+    pub glass_tint: u8,
+    /// Reduce motion: follow macOS, or always on.
+    #[serde(default)]
+    pub reduce_motion: MotionPref,
+    /// Left column width (points), when the user has dragged it.
+    #[serde(default)]
+    pub sidebar_width: Option<f32>,
+    /// Side-by-side diffs instead of unified.
+    #[serde(default)]
+    pub diff_split: bool,
+    /// Hide whitespace-only changes in diffs.
+    #[serde(default)]
+    pub ignore_whitespace: bool,
+}
+
+fn default_glass_tint() -> u8 {
+    40
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        // Same values serde fills in for missing keys.
+        serde_json::from_str("{}").expect("empty settings parse")
+    }
+}
+
+/// Window backdrop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Backdrop {
+    #[default]
+    Glass,
+    Solid,
+}
+
+/// Reduce-motion preference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MotionPref {
+    #[default]
+    System,
+    Always,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -97,5 +147,7 @@ mod tests {
         // Missing keys default.
         let s: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.appearance, AppearanceMode::System);
+        assert_eq!(s.glass_tint, 40);
+        assert_eq!(s.backdrop, Backdrop::Glass);
     }
 }

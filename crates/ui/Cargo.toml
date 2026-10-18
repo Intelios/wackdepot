@@ -12,6 +12,22 @@ serde.workspace = true
 serde_json.workspace = true
 unicode-segmentation.workspace = true
 notify.workspace = true
+# Native glass, appearance and accessibility (macOS only, by design).
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSString", "NSObject"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+    "NSGlassEffectView",
+    "NSApplication",
+    "NSAppearance",
+    "NSWorkspace",
+    "NSAccessibility",
+] }
+raw-window-handle = "0.6"
 
 [dev-dependencies]
 tempfile.workspace = true
