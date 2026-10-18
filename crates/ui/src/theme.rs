@@ -127,7 +127,7 @@ impl Theme {
 
             well: rgba(0xe8eae0ff),
             input: rgba(0xf0f2e8ff),
-            panel: rgba(0xecefE3ff),
+            panel: rgba(0xecefe3ff),
             bg: rgba(0xf4f5efff),
             surface: rgba(0xfbfbf6ff),
             elevated: rgba(0xffffffff),

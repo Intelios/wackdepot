@@ -5,8 +5,8 @@
 #![allow(dead_code)]
 
 use gpui::{
-    Background, Bounds, BoxShadow, Corners, Hsla, Pixels, Styled, Window, hsla,
-    linear_color_stop, linear_gradient, point, px,
+    Background, Bounds, BoxShadow, Corners, Hsla, Pixels, Styled, Window, hsla, linear_color_stop,
+    linear_gradient, point, px,
 };
 
 use crate::theme::Theme;

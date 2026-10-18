@@ -49,11 +49,7 @@ pub fn bind_input_keys(cx: &mut App) {
         gpui::KeyBinding::new("cmd-x", Cut, Some("TextInput")),
         gpui::KeyBinding::new("home", Home, Some("TextInput")),
         gpui::KeyBinding::new("end", End, Some("TextInput")),
-        gpui::KeyBinding::new(
-            "ctrl-cmd-space",
-            ShowCharacterPalette,
-            Some("TextInput"),
-        ),
+        gpui::KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some("TextInput")),
     ]);
 }
 
@@ -339,6 +335,12 @@ impl TextInput {
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
+    }
+
+    /// `reset` with notification — callers hold `&mut Context`.
+    pub fn reset_in(&mut self, cx: &mut Context<Self>) {
+        self.reset();
+        cx.notify();
     }
 
     pub fn reset(&mut self) {

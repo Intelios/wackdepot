@@ -4,7 +4,7 @@
 //! optional search row, then rows with a round mark, mono name and key hints.
 
 use gpui::{
-    Anchor, App, ClickEvent, Context, Div, IntoElement, Stateful, Window, anchored, deferred, div,
+    Anchor, App, ClickEvent, Div, IntoElement, Stateful, Window, anchored, deferred, div,
     prelude::*, px,
 };
 

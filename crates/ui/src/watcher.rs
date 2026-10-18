@@ -38,11 +38,7 @@ fn git_dir(repo: &Path) -> Option<PathBuf> {
     }
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let p = PathBuf::from(&text);
-    Some(if p.is_absolute() {
-        p
-    } else {
-        repo.join(p)
-    })
+    Some(if p.is_absolute() { p } else { repo.join(p) })
 }
 
 /// Start watching `repo`'s worktree + `.git`. Returns `None` if the platform

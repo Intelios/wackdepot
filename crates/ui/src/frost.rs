@@ -16,7 +16,12 @@ pub const MENU_BLUR: f32 = 16.0;
 
 /// Frost `child` (a popover card): backdrop-blurred on glass, pass-through
 /// where frost is off. `corner_radius` must match the card's rounding.
-pub fn frosted(corner_radius: f32, blur_radius: f32, frost: bool, child: impl IntoElement) -> Frosted {
+pub fn frosted(
+    corner_radius: f32,
+    blur_radius: f32,
+    frost: bool,
+    child: impl IntoElement,
+) -> Frosted {
     Frosted {
         corner_radius,
         blur_radius,
