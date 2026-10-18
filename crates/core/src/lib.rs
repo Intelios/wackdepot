@@ -7,3 +7,32 @@
 //!   sentence, shown verbatim in the UI.
 //! - `GIT_TERMINAL_PROMPT=0` is always set so a GUI-launched git never blocks
 //!   waiting for a tty credential prompt.
+//!
+//! ## Map
+//! - [`git`] — the subprocess runner everything funnels through (`-C <repo>`).
+//! - [`status`] — `git status --porcelain=v2` parsing → `RepoStatus`, plus
+//!   merge-state helpers (`is_merging`, `abort_merge`).
+//! - [`diff`] — unified-diff parsing (`parse_diff`), per-file diffs,
+//!   synthesized diffs for untracked files, `diff_commit`.
+//! - [`stage`] — hunk-level staging/discard via `git apply`, file-level
+//!   stage/unstage/discard/trash, conflict resolution.
+//! - [`commit`] — committing, safe undo, author identity, `list_log`.
+//! - [`branch`] — list/create/checkout/delete branches.
+//! - [`sync`] — fetch/pull/push/clone, repo creation.
+//! - [`stash`] — stash list/push/apply/pop/drop.
+//! - [`repo`] — repo discovery (`is_repo`, `repo_root`), `git_version`.
+
+pub mod branch;
+pub mod commit;
+pub mod diff;
+mod git;
+pub mod repo;
+pub mod stage;
+pub mod stash;
+pub mod status;
+pub mod sync;
+
+#[cfg(test)]
+mod testutil;
+
+pub use git::{Git, GitOutput, failure_message};

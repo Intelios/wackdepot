@@ -3,9 +3,13 @@
 
 pub mod frost;
 pub mod glass;
+pub mod icons;
 pub mod input;
+pub mod popover;
+pub mod settings;
 pub mod shell;
 pub mod theme;
+mod watcher;
 
 use gpui::{
     App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions,
@@ -21,7 +25,9 @@ fn quit(_: &Quit, cx: &mut App) {
 
 /// Open the main window and run the app. Called once from the binary.
 pub fn run_app() {
-    gpui_platform::application().run(|cx: &mut App| {
+    gpui_platform::application()
+        .with_assets(icons::IconAssets)
+        .run(|cx: &mut App| {
         cx.on_action(quit);
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         input::bind_input_keys(cx);
