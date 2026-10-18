@@ -82,12 +82,39 @@ impl Shell {
 
     pub fn delete_branch(&mut self, name: String, force: bool, cx: &mut Context<Self>) {
         self.popover = None;
+        let Some(repo) = self.active.clone() else {
+            return;
+        };
         let label = name.clone();
-        self.run_op(
-            BusyOp::Other("Deleting branch"),
-            move |r| branch::delete_branch(r, &name, force).map(|()| format!("Deleted {label}.")),
-            cx,
-        );
+        self.busy = Some(BusyOp::Other("Deleting branch"));
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let out = cx
+                .background_executor()
+                .spawn({
+                    let repo = repo.clone();
+                    let name = name.clone();
+                    async move { branch::delete_branch(&repo, &name, force) }
+                })
+                .await;
+            let _ = this.update(cx, move |this, cx| {
+                this.busy = None;
+                match out {
+                    Ok(()) => {
+                        this.refresh_gen += 1;
+                        this.notify(format!("Deleted {label}."), false, cx);
+                    }
+                    Err(e) if !force && e.contains("not fully merged") => {
+                        this.dialog = Some(Dialog::Confirm(ConfirmAction::ForceDeleteBranch {
+                            name: label.clone(),
+                        }));
+                    }
+                    Err(e) => this.notify_error(e, cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     // ----------------------------------------------------------- file ops
@@ -127,6 +154,23 @@ impl Shell {
     pub fn stage_bucket(&mut self, bucket: Bucket, cx: &mut Context<Self>) {
         match bucket {
             Bucket::Staged => self.run_op(BusyOp::Other("Unstaging"), stage::unstage_all, cx),
+            // "Stage all" on Conflicted must only mark those files resolved —
+            // sweeping unrelated unstaged edits into a merge commit is wrong.
+            Bucket::Conflicted => self.run_op(
+                BusyOp::Other("Resolving"),
+                |r| {
+                    let files: Vec<String> = status::status(r)?
+                        .conflicted
+                        .iter()
+                        .map(|f| f.path.clone())
+                        .collect();
+                    for f in &files {
+                        stage::mark_resolved(r, f)?;
+                    }
+                    Ok(format!("Marked {} resolved.", files.len()))
+                },
+                cx,
+            ),
             _ => self.run_op(BusyOp::Other("Staging"), stage::stage_all, cx),
         }
     }
@@ -200,6 +244,9 @@ impl Shell {
             }
             ConfirmAction::DeleteBranch { name, force } => {
                 self.delete_branch(name, force, cx);
+            }
+            ConfirmAction::ForceDeleteBranch { name } => {
+                self.delete_branch(name, true, cx);
             }
             ConfirmAction::AbortMerge => {
                 self.run_op(BusyOp::Other("Aborting merge"), status::abort_merge, cx);

@@ -148,14 +148,23 @@ where
 /// punctuated. Bare "Aborting" trailers are skipped — the line above them
 /// carries the actual reason. Empty when git printed nothing at all.
 pub fn failure_message(out: &GitOutput) -> String {
-    for line in out.stderr.lines().rev().chain(out.stdout.lines().rev()) {
-        let line = line.trim();
-        if line.is_empty() || line.trim_end_matches('.') == "Aborting" {
-            continue;
+    // Prefer explicit error/fatal lines — advice (`hint:` …) trails the real
+    // reason and reads badly as a toast. Fall back to the last meaningful line.
+    let lines = || {
+        out.stderr
+            .lines()
+            .chain(out.stdout.lines())
+            .map(str::trim)
+            .filter(|l| {
+                !l.is_empty() && l.trim_end_matches('.') != "Aborting" && !l.starts_with("hint:")
+            })
+    };
+    for line in lines().rev() {
+        if line.starts_with("error:") || line.starts_with("fatal:") {
+            return polish(line);
         }
-        return polish(line);
     }
-    String::new()
+    lines().next_back().map(polish).unwrap_or_default()
 }
 
 fn run_failure<S: AsRef<OsStr>>(out: &GitOutput, args: &[S]) -> String {

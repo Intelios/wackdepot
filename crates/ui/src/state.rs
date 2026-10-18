@@ -66,6 +66,10 @@ pub enum ConfirmAction {
         name: String,
         force: bool,
     },
+    /// git refused -d (not fully merged): escalate to a force confirm.
+    ForceDeleteBranch {
+        name: String,
+    },
     AbortMerge,
     DropStash {
         name: String,
@@ -79,6 +83,7 @@ impl ConfirmAction {
             ConfirmAction::TrashFile { path } => format!("Delete {path}?"),
             ConfirmAction::DiscardAll => "Discard all changes?".into(),
             ConfirmAction::DeleteBranch { name, .. } => format!("Delete {name}?"),
+            ConfirmAction::ForceDeleteBranch { name } => format!("Force-delete {name}?"),
             ConfirmAction::AbortMerge => "Abort this merge?".into(),
             ConfirmAction::DropStash { name } => format!("Drop {name}?"),
         }
@@ -102,6 +107,9 @@ impl ConfirmAction {
                 } else {
                     "Only possible if it's fully merged.".into()
                 }
+            }
+            ConfirmAction::ForceDeleteBranch { .. } => {
+                "It isn't fully merged — its commits may become unreachable.".into()
             }
             ConfirmAction::AbortMerge => {
                 "The working tree goes back to before the merge. Conflict resolutions are lost."

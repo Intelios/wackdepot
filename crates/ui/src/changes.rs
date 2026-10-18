@@ -118,13 +118,62 @@ impl Shell {
         };
 
         let commit_box = self.commit_box(cx, theme);
+        let merging = self
+            .repo
+            .status
+            .as_ref()
+            .is_some_and(|s| s.merge_in_progress);
         div()
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
             .child(body)
+            .when(merging, |el| el.child(self.merge_banner(cx, theme)))
             .child(commit_box)
+    }
+
+    /// Yellow rail banner while a merge is in progress.
+    fn merge_banner(&self, cx: &mut Context<Self>, theme: &Theme) -> Div {
+        div()
+            .flex_none()
+            .mx_3()
+            .mb_2()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .bg(theme.warning.opacity(0.12))
+            .border_1()
+            .border_color(theme.warning.opacity(0.4))
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .text_color(theme.text)
+                    .text_ellipsis()
+                    .child("Merging — resolve, then commit."),
+            )
+            .child(
+                div()
+                    .id("abort-merge")
+                    .flex_none()
+                    .h_6()
+                    .px_2()
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .text_sm()
+                    .text_color(theme.warning)
+                    .cursor_pointer()
+                    .occlude()
+                    .hover(|s| s.bg(theme.warning.opacity(0.15)))
+                    .child("Abort")
+                    .on_click(cx.listener(|this, _, _, cx| this.ask_abort_merge(cx))),
+            )
     }
 
     fn empty_rail(&self, theme: &Theme, text: &str) -> Div {
