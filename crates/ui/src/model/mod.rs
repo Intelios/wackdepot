@@ -422,12 +422,17 @@ impl RepoModel {
             cx.emit(RepoEvent::Diff);
             return;
         };
-        // Keep showing the old diff while reloading the same selection, so
-        // a refresh doesn't flash an empty card.
-        let same = matches!(&self.diff, DiffState::Ready(d) if same_target(&d.selection, &sel));
-        if !same {
-            self.diff = DiffState::Loading;
-            cx.emit(RepoEvent::Diff);
+        // Keep showing the last diff while the next one loads: reloading
+        // the same selection refreshes in place, and a different selection
+        // keeps the card's chrome (the card dims it). Only when there is no
+        // doc to keep does the card drop to its loading state.
+        match &self.diff {
+            DiffState::Ready(d) if same_target(&d.selection, &sel) => {}
+            DiffState::Ready(_) | DiffState::Loading => {}
+            _ => {
+                self.diff = DiffState::Loading;
+                cx.emit(RepoEvent::Diff);
+            }
         }
         let opts = Self::diff_options(cx);
         let snap = self.snap.clone();
@@ -602,7 +607,7 @@ impl RepoModel {
 }
 
 /// Same file/commit (ignoring which commit file is picked).
-fn same_target(a: &Selection, b: &Selection) -> bool {
+pub(crate) fn same_target(a: &Selection, b: &Selection) -> bool {
     match (a, b) {
         (
             Selection::File {

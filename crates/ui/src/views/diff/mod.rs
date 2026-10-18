@@ -27,6 +27,7 @@ use crate::components::seam::seam;
 use crate::components::spinner::orbit;
 use crate::model::{
     Bucket, ConfirmAction, DiffDoc, DiffState, DocKind, RepoEvent, RepoModel, Selection,
+    same_target,
 };
 use crate::theme::{ActiveTheme, Theme, metrics};
 use crate::views::time::long_age;
@@ -34,6 +35,10 @@ use crate::views::time::long_age;
 const CODE_H: f32 = 22.0;
 const HUNK_H: f32 = 36.0;
 const GUTTER_W: f32 = 46.0;
+/// A commit body shows this many lines before a "Show more" toggle.
+const BODY_LINES: usize = 5;
+/// ~BODY_LINES of wrapped text — a single hard line can be long too.
+const BODY_CHARS: usize = 380;
 
 /// One row of the rendered diff.
 #[derive(Debug, Clone, Copy)]
@@ -65,6 +70,8 @@ pub struct DiffCard {
     /// Dragging across the gutter: `Some(true)` adds lines, `Some(false)`
     /// removes them.
     drag: Option<bool>,
+    /// SHA of the commit whose body is expanded past its clamp.
+    body_expanded: Option<String>,
 }
 
 impl DiffCard {
@@ -95,6 +102,7 @@ impl DiffCard {
             list: ListState::new(0, ListAlignment::Top, px(600.)),
             sel: BTreeSet::new(),
             drag: None,
+            body_expanded: None,
         }
     }
 
@@ -657,13 +665,43 @@ impl DiffCard {
                             ),
                     )
                     .when(!entry.body.trim().is_empty(), |el| {
-                        el.child(
-                            div()
-                                .pt(px(4.))
-                                .text_size(px(12.5))
-                                .text_color(t.text_soft)
-                                .child(entry.body.trim().to_string()),
-                        )
+                        let body = entry.body.trim().to_string();
+                        let long = body.lines().count() > BODY_LINES || body.len() > BODY_CHARS;
+                        let expanded = self.body_expanded.as_deref() == Some(entry.sha.as_str());
+                        let mut text = div()
+                            .pt(px(4.))
+                            .text_size(px(12.5))
+                            .text_color(t.text_soft)
+                            .child(body);
+                        if long && !expanded {
+                            text = text
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .line_clamp(BODY_LINES);
+                        }
+                        el.child(text).when(long, |el| {
+                            let sha = entry.sha.clone();
+                            let ent = cx.entity();
+                            el.child(
+                                div().flex().pt(px(4.)).child(
+                                    button(
+                                        "body-toggle",
+                                        if expanded { "Show less" } else { "Show more" },
+                                    )
+                                    .small()
+                                    .ghost()
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            ent.update(cx, |d, cx| {
+                                                d.body_expanded =
+                                                    if expanded { None } else { Some(sha.clone()) };
+                                                cx.notify();
+                                            })
+                                        },
+                                    ),
+                                ),
+                            )
+                        })
                     }),
             )
             .child(
@@ -684,9 +722,15 @@ impl DiffCard {
         let DocKind::Commit { entry, files } = &doc.kind else {
             return div().into_any_element();
         };
-        let current = match &doc.selection {
-            Selection::Commit { file, .. } => file.clone(),
-            _ => None,
+        // The live selection drives the highlight so a click lights its row
+        // before the new diff lands; otherwise the file the doc is showing
+        // stays lit (it may still be on screen while the next doc loads).
+        let current = match &self.model.read(cx).selection {
+            Some(Selection::Commit { sha, file: Some(f) }) if *sha == entry.sha => Some(f.clone()),
+            _ => match &doc.selection {
+                Selection::Commit { file, .. } => file.clone(),
+                _ => None,
+            },
         };
         let mut col = div()
             .id("commit-files")
@@ -757,6 +801,33 @@ impl DiffCard {
             col = col.child(row);
         }
         col.into_any_element()
+    }
+
+    /// The diff well. While a different selection's diff loads, the last
+    /// diff stays on screen dimmed under a veil (blocking stray clicks)
+    /// with the orbit — the card's chrome doesn't collapse to a spinner.
+    fn body_pane(&self, stale: bool, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.theme().clone();
+        let body = self.body(cx);
+        if !stale {
+            return body;
+        }
+        div()
+            .size_full()
+            .relative()
+            .child(body)
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .bg(t.well.opacity(0.55))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(orbit("diff-swap").size(18.)),
+            )
+            .into_any_element()
     }
 
     fn body(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -968,6 +1039,12 @@ impl Render for DiffCard {
                 cx.notify();
             }),
         );
+        // The kept doc is stale once the selection moved on to a different
+        // target: its body veils while the new diff loads.
+        let stale = match (&model.selection, self.doc.as_ref()) {
+            (Some(sel), Some(doc)) => !same_target(&doc.selection, sel),
+            _ => false,
+        };
         let Some(doc) = self.doc.clone() else {
             let inner = if let Some(e) = error {
                 empty_state("alert", "Couldn't load this diff")
@@ -998,7 +1075,7 @@ impl Render for DiffCard {
                 }
                 card = card
                     .child(seam())
-                    .child(div().flex_1().min_h_0().child(self.body(cx)));
+                    .child(div().flex_1().min_h_0().child(self.body_pane(stale, cx)));
             }
             DocKind::Commit { .. } => {
                 card = card.child(self.commit_head(&doc, cx)).child(seam()).child(
@@ -1007,7 +1084,13 @@ impl Render for DiffCard {
                         .min_h_0()
                         .flex()
                         .child(self.file_strip(&doc, cx))
-                        .child(div().flex_1().min_w_0().h_full().child(self.body(cx))),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .h_full()
+                                .child(self.body_pane(stale, cx)),
+                        ),
                 );
             }
         }
@@ -1028,7 +1111,10 @@ impl Render for DiffCard {
                     .child("Whitespace hidden — staging lines is off"),
             );
         }
-        card.children(self.pick_pill(cx)).into_any_element()
+        if !stale {
+            card = card.children(self.pick_pill(cx));
+        }
+        card.into_any_element()
     }
 }
 

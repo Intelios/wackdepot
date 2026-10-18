@@ -9,6 +9,7 @@ use gpui::{
 use wackdepot_core::commit::CommitOptions;
 
 use crate::components::button::{Variant, button, icon_button};
+use crate::components::seam::seam;
 use crate::components::text_input::{TextInput, TextInputEvent};
 use crate::icons::icon;
 use crate::model::{Beat, Bucket, BusyOp, RepoEvent, RepoModel};
@@ -330,6 +331,8 @@ impl Render for Composer {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(self.summary.clone()),
             )
+            // The same seam the diff card wears, between the two fields.
+            .child(div().mx(px(-12.)).my(px(2.)).child(seam()))
             .child(
                 div()
                     .text_size(px(13.))
