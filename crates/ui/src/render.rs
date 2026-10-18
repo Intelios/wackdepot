@@ -120,11 +120,11 @@ impl Shell {
             .occlude()
             .text_color(theme.text_soft)
             .hover(|s| s.bg(theme.accent.opacity(0.12)))
-            .child(icon("git-branch").size_4())
+            .child(icon("git-branch").size_4().text_color(theme.text_soft))
             .child(self.branch_label());
 
         let gear = pill_button(theme, div().id("settings-gear"), false)
-            .child(icon("settings").size_4())
+            .child(icon("settings").size_4().text_color(theme.text_soft))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.dialog = Some(Dialog::Settings);
                 cx.notify();
@@ -206,7 +206,7 @@ impl Shell {
                         )
                         .child(
                             pill_button(theme, div().id("sync-menu"), false)
-                                .child(icon("ellipsis").size_4())
+                                .child(icon("ellipsis").size_4().text_color(theme.text_soft))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.popover = match this.popover {
                                         Some(PopoverKind::SyncMenu) => None,

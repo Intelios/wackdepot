@@ -71,6 +71,7 @@ pub fn row(
         .px_2()
         .h_7()
         .rounded_md()
+        .overflow_hidden()
         .cursor_pointer()
         .occlude()
         .text_color(theme.text)
@@ -96,7 +97,13 @@ pub fn row(
     }
     r = r.child(div().flex_1().overflow_hidden().child(label));
     if let Some(t) = trailing {
-        r = r.child(div().text_xs().text_color(theme.text_dim).child(t));
+        r = r.child(
+            div()
+                .flex_none()
+                .text_xs()
+                .text_color(theme.text_dim)
+                .child(t),
+        );
     }
     r
 }

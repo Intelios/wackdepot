@@ -393,7 +393,7 @@ impl Shell {
                                 .text_color(theme.danger)
                                 .hover(|s| s.bg(theme.danger.opacity(0.15)))
                                 .occlude()
-                                .child(icon("trash").size_3())
+                                .child(icon("trash").size_3().text_color(theme.danger))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.ask_discard_file(discard_path.clone(), is_untracked, cx);
                                     cx.stop_propagation();

@@ -98,7 +98,7 @@ impl Shell {
                         .items_center()
                         .justify_center()
                         .text_color(theme.text_dim)
-                        .child(icon("commit").size_2p5()),
+                        .child(icon("commit").size_2p5().text_color(theme.text_dim)),
                 )
                 .child(
                     div()

@@ -36,9 +36,11 @@ impl Shell {
                 Some(
                     div()
                         .id(format!("rm-{}", path.display()))
+                        .w_5()
+                        .h_5()
                         .text_color(theme.danger)
                         .occlude()
-                        .child(icon("x").size_3())
+                        .child(icon("x").size_4().text_color(theme.danger))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.remove_repo(&p3, cx);
                             cx.stop_propagation();
@@ -117,9 +119,10 @@ impl Shell {
                 Some(
                     div()
                         .id(format!("del-{}", b.name))
-                        .text_color(theme.danger)
+                        .w_5()
+                        .h_5()
                         .occlude()
-                        .child(icon("trash").size_3())
+                        .child(icon("trash").size_4().text_color(theme.danger))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.ask_delete_branch(name2.clone(), false, cx);
                             cx.stop_propagation();
@@ -228,7 +231,7 @@ impl Shell {
             row(
                 theme,
                 "m-fetch",
-                Some(icon("fetch")),
+                Some(icon("fetch").text_color(theme.text_soft)),
                 "Fetch",
                 None::<Div>,
                 false,
@@ -241,7 +244,7 @@ impl Shell {
             row(
                 theme,
                 "m-pull",
-                Some(icon("pull")),
+                Some(icon("pull").text_color(theme.text_soft)),
                 "Pull",
                 None::<Div>,
                 false,
@@ -254,7 +257,7 @@ impl Shell {
             row(
                 theme,
                 "m-push",
-                Some(icon("push")),
+                Some(icon("push").text_color(theme.text_soft)),
                 "Push",
                 None::<Div>,
                 false,
@@ -268,7 +271,7 @@ impl Shell {
             row(
                 theme,
                 "m-stash",
-                Some(icon("stash")),
+                Some(icon("stash").text_color(theme.text_soft)),
                 "Stash all changes",
                 None::<Div>,
                 false,
@@ -292,9 +295,8 @@ impl Shell {
                     Some(
                         div()
                             .id(format!("stash-drop-{}", s.name))
-                            .text_color(theme.danger)
                             .occlude()
-                            .child(icon("trash").size_3())
+                            .child(icon("trash").size_4().text_color(theme.danger))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.ask_drop_stash(n.clone(), cx);
                                 cx.stop_propagation();
@@ -311,7 +313,7 @@ impl Shell {
             row(
                 theme,
                 "m-editor",
-                Some(icon("external")),
+                Some(icon("external").text_color(theme.text_soft)),
                 "Open in Editor",
                 None::<Div>,
                 false,
@@ -323,7 +325,7 @@ impl Shell {
             row(
                 theme,
                 "m-terminal",
-                Some(icon("external")),
+                Some(icon("external").text_color(theme.text_soft)),
                 "Open in Terminal",
                 None::<Div>,
                 false,
@@ -335,7 +337,7 @@ impl Shell {
             row(
                 theme,
                 "m-finder",
-                Some(icon("folder")),
+                Some(icon("folder").text_color(theme.text_soft)),
                 "Show in Finder",
                 None::<Div>,
                 false,
