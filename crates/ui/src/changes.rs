@@ -76,6 +76,9 @@ impl Shell {
     }
 
     pub fn changes_view(&self, cx: &mut Context<Self>, theme: &Theme) -> Div {
+        if self.active.is_none() {
+            return self.empty_rail(theme, "Pick a repository up top.");
+        }
         let rows = self.change_rows();
         let body: Div = if rows.is_empty() {
             if self.repo.status.is_none() {

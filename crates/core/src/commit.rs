@@ -68,6 +68,14 @@ pub fn author(repo: &Path) -> Result<(String, String), String> {
 /// [`undo_last_commit`] safe — a pushed commit is someone else's history.
 pub fn tip_is_unpushed(repo: &Path) -> Result<bool, String> {
     let g = Git::new(repo);
+    // Unborn HEAD (fresh repo): nothing to undo.
+    let has_head = g
+        .try_run(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .map(|o| o.ok())
+        .unwrap_or(false);
+    if !has_head {
+        return Ok(false);
+    }
     let upstream = g
         .try_run(["rev-parse", "--verify", "--quiet", "@{u}"])
         .map(|o| o.ok())

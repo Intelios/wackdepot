@@ -305,7 +305,7 @@ impl Shell {
         self.popover = None;
         self.run_op(
             BusyOp::Other("Stashing"),
-            |r| stash::stash_push(r, None, false).map(|()| "Stashed.".to_string()),
+            |r| stash::stash_push(r, None, true).map(|()| "Stashed.".to_string()),
             cx,
         );
     }
@@ -375,8 +375,14 @@ impl Shell {
                 let _ = this.update(cx, move |this, cx| {
                     let text = path.to_string_lossy().to_string();
                     match into {
+                        // The picker chooses a parent; append the repo's name
+                        // from the URL so the field stays the full destination.
                         PickTarget::CloneDir => {
-                            this.clone_dir.update(cx, |i, cx| i.set_content(&text, cx))
+                            let url = this.clone_dir_update_source(cx);
+                            let dest = wackdepot_core::sync::name_from_url(&url)
+                                .map(|n| path.join(n).to_string_lossy().to_string())
+                                .unwrap_or(text);
+                            this.clone_dir.update(cx, |i, cx| i.set_content(&dest, cx))
                         }
                         PickTarget::NewRepoDir => this
                             .new_repo_dir
@@ -386,6 +392,11 @@ impl Shell {
             }
         })
         .detach();
+    }
+
+    /// Clone-dir picker's helper: the URL field's current text.
+    fn clone_dir_update_source(&self, cx: &Context<Self>) -> String {
+        self.clone_url.read(cx).content().trim().to_string()
     }
 
     pub fn do_clone(&mut self, cx: &mut Context<Self>) {
@@ -399,7 +410,16 @@ impl Shell {
             self.notify_error("Pick the folder to clone into.".into(), cx);
             return;
         }
-        let parent = PathBuf::from(&dir);
+        // The field is the *destination*: split it so `clone` gets a parent
+        // that must exist and the folder name to create.
+        let dest = PathBuf::from(&dir);
+        let (parent, name) = match (dest.parent().map(PathBuf::from), dest.file_name()) {
+            (Some(p), Some(n)) => (p, n.to_string_lossy().to_string()),
+            _ => {
+                self.notify_error("That folder path doesn't make sense.".into(), cx);
+                return;
+            }
+        };
         self.dialog = None;
         self.clone_url.update(cx, |i, cx| i.reset_in(cx));
         self.clone_dir.update(cx, |i, cx| i.reset_in(cx));
@@ -408,7 +428,7 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let out = cx
                 .background_executor()
-                .spawn(async move { sync::clone(&url, &parent, None) })
+                .spawn(async move { sync::clone(&url, &parent, Some(&name)) })
                 .await;
             let _ = this.update(cx, move |this, cx| {
                 this.busy = None;

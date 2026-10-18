@@ -50,8 +50,10 @@ fn support_dir() -> PathBuf {
 }
 
 fn dirs_base() -> PathBuf {
+    // macOS app support lives under ~/Library — plain HOME is the home dir,
+    // not the Library root.
     std::env::var("HOME")
-        .map(PathBuf::from)
+        .map(|h| PathBuf::from(h).join("Library"))
         .unwrap_or_else(|_| PathBuf::from("/tmp"))
 }
 
@@ -61,10 +63,10 @@ fn settings_path() -> PathBuf {
 
 pub fn load() -> Settings {
     let path = settings_path();
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Settings::default();
-    };
-    serde_json::from_str(&text).unwrap_or_default()
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        Err(_) => Settings::default(),
+    }
 }
 
 /// Atomic write: tmp file + rename so a crash mid-save can't corrupt it.

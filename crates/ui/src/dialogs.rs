@@ -117,7 +117,7 @@ impl Shell {
             .child(field(theme, "Repository URL", self.clone_url.clone()))
             .child(field_row(
                 theme,
-                "Local folder",
+                "Destination folder",
                 self.clone_dir.clone(),
                 "Choose…",
                 cx.listener(|this, _, _, cx| this.pick_dir(PickTarget::CloneDir, cx)),

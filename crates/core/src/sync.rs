@@ -139,7 +139,8 @@ fn progress_tail(stdout: &str, stderr: &str) -> String {
 
 /// Name git would give a cloned directory: last URL component minus `.git`,
 /// minus a trailing slash. `None` for empty/`.` results.
-fn name_from_url(url: &str) -> Option<String> {
+/// Repo folder name derived from a clone URL (`…/name.git` → `name`).
+pub fn name_from_url(url: &str) -> Option<String> {
     let last = url.trim_end_matches('/').rsplit('/').next()?;
     let stem = last.strip_suffix(".git").unwrap_or(last);
     (!stem.is_empty() && stem != ".").then(|| stem.to_string())
