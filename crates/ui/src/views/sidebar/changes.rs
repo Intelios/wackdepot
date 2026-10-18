@@ -72,7 +72,7 @@ impl SidebarView {
             .collect()
     }
 
-    fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
+    pub(super) fn step_file(&mut self, delta: isize, cx: &mut Context<Self>) {
         let files = self.visible_files(cx);
         if files.is_empty() {
             return;
@@ -264,14 +264,22 @@ impl SidebarView {
             .id("changes-scroll")
             .key_context("FileList")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.step(-1, cx)))
-            .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.step(1, cx)))
+            .on_action(cx.listener(|this, _: &SelectPrev, _, cx| {
+                this.step(-1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SelectNext, _, cx| {
+                this.step(1, cx);
+            }))
             .on_action(cx.listener(|this, _: &ToggleStage, _, cx| this.toggle_selected(cx)))
             .on_action(cx.listener(|this, _: &DiscardSelected, _, cx| this.discard_selected(cx)))
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.focus_list(window, cx)),
+            )
             .child(
                 div()
                     .relative()

@@ -17,9 +17,9 @@ use crate::icons;
 use crate::model::{RepoEvent, RepoModel, Tab};
 use crate::motion::{EASE, Motion, POP};
 use crate::theme::{self, ActiveTheme, metrics};
-use crate::views::diff::DiffCard;
+use crate::views::diff::{self, DiffCard};
 use crate::views::settings::{SettingsEvent, SettingsNav, SettingsPage};
-use crate::views::sidebar::{self, SidebarView};
+use crate::views::sidebar::{self, SelectNext, SelectPrev, SidebarView};
 use crate::views::titlebar::{TitlePopover, TitlebarView};
 use crate::views::welcome::Welcome;
 
@@ -38,6 +38,7 @@ pub fn run() {
             actions::register(cx);
             text_input::bind_keys(cx);
             sidebar::bind_keys(cx);
+            diff::bind_keys(cx);
             backdrop::sync_reduce_motion(cx);
             // The syntax set takes a moment to load; do it off the main thread.
             std::thread::spawn(wackdepot_syntax::warm);
@@ -135,6 +136,11 @@ impl Workspace {
             .clamp(metrics::SIDEBAR_MIN, metrics::SIDEBAR_MAX);
         let focus = cx.focus_handle();
         focus.focus(window, cx);
+        // A focused element can vanish while it holds focus (switching tabs
+        // hides the commit file strip, closing Settings drops its page).
+        // With nothing focused, keys go nowhere, so hand focus to the root.
+        cx.on_focus_lost(window, |ws, window, cx| ws.focus.focus(window, cx))
+            .detach();
         let mut ws = Self {
             focus,
             model,
@@ -171,6 +177,24 @@ impl Workspace {
             let p = p.clone();
             self.model.update(cx, |m, cx| m.open(p, cx));
         }
+    }
+
+    /// Arrow keys: when nothing focused owns them — no field, no commit file
+    /// strip, no dialog, no popover — they walk the list on the left.
+    /// Text fields and the strip bind their own, deeper, arrows and win.
+    fn step_selection(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route != Route::Repo || self.model.read(cx).repo.is_none() {
+            return;
+        }
+        if self.titlebar.read(cx).open.is_some() {
+            return;
+        }
+        self.sidebar.update(cx, |s, cx| {
+            if s.step(delta, cx) {
+                // Focus follows the list, so Space and ⌘⌫ work right after.
+                s.focus_list(window, cx);
+            }
+        });
     }
 
     fn dismiss(&mut self, cx: &mut Context<Self>) {
@@ -339,6 +363,7 @@ impl Render for Workspace {
 
         let root = div()
             .id("workspace")
+            .key_context("Workspace")
             .relative()
             .size_full()
             .bg(t.shell(mix))
@@ -402,6 +427,12 @@ impl Render for Workspace {
             .on_action(cx.listener(|ws, _: &ShowHistory, _, cx| {
                 ws.model.update(cx, |m, cx| m.set_tab(Tab::History, cx))
             }))
+            .on_action(
+                cx.listener(|ws, _: &SelectPrev, window, cx| ws.step_selection(-1, window, cx)),
+            )
+            .on_action(
+                cx.listener(|ws, _: &SelectNext, window, cx| ws.step_selection(1, window, cx)),
+            )
             .on_action(cx.listener(|ws, _: &ShowRepositories, window, cx| {
                 ws.titlebar
                     .update(cx, |t, cx| t.toggle(TitlePopover::Repos, window, cx))

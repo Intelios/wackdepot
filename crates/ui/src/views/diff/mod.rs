@@ -10,8 +10,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, Entity, FontWeight, IntoElement, ListAlignment, ListState, MouseButton,
-    ParentElement, Render, Styled, StyledText, Window, div, list, prelude::*, px,
+    AnyElement, App, Context, Entity, FocusHandle, FontWeight, IntoElement, KeyBinding,
+    ListAlignment, ListState, MouseButton, ParentElement, Render, ScrollHandle, Styled, StyledText,
+    Window, div, list, point, prelude::*, px,
 };
 use wackdepot_core::diff::{DiffFileStatus, DiffLine, DiffLineKind, FileDiff};
 use wackdepot_core::stage::LineSel;
@@ -30,11 +31,16 @@ use crate::model::{
     same_target,
 };
 use crate::theme::{ActiveTheme, Theme, metrics};
+use crate::views::sidebar::{SelectNext, SelectPrev};
 use crate::views::time::long_age;
 
 const CODE_H: f32 = 22.0;
 const HUNK_H: f32 = 36.0;
 const GUTTER_W: f32 = 46.0;
+/// A row in a commit's file strip, the gap under it, and the strip's padding.
+const STRIP_ROW_H: f32 = 30.0;
+const STRIP_GAP: f32 = 1.0;
+const STRIP_PAD: f32 = 6.0;
 /// A commit body shows this many lines before a "Show more" toggle.
 const BODY_LINES: usize = 5;
 /// ~BODY_LINES of wrapped text — a single hard line can be long too.
@@ -58,6 +64,14 @@ enum Row {
     },
 }
 
+/// Arrows walk a commit's files while its file strip has focus.
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("up", SelectPrev, Some("FileStrip")),
+        KeyBinding::new("down", SelectNext, Some("FileStrip")),
+    ]);
+}
+
 pub struct DiffCard {
     model: Entity<RepoModel>,
     overlays: Entity<Overlays>,
@@ -65,6 +79,9 @@ pub struct DiffCard {
     split: bool,
     rows: Rc<Vec<Row>>,
     list: ListState,
+    /// Focus for the commit file strip.
+    focus: FocusHandle,
+    strip_scroll: ScrollHandle,
     /// Lines picked for partial staging, as (hunk, line).
     sel: BTreeSet<(usize, usize)>,
     /// Dragging across the gutter: `Some(true)` adds lines, `Some(false)`
@@ -100,6 +117,8 @@ impl DiffCard {
             split,
             rows: Rc::new(Vec::new()),
             list: ListState::new(0, ListAlignment::Top, px(600.)),
+            focus: cx.focus_handle(),
+            strip_scroll: ScrollHandle::new(),
             sel: BTreeSet::new(),
             drag: None,
             body_expanded: None,
@@ -717,6 +736,66 @@ impl DiffCard {
             .into_any_element()
     }
 
+    /// Where the strip's lit file sits: the live selection if it belongs to
+    /// this commit, otherwise whatever file the shown doc settled on.
+    fn strip_index(doc: &DiffDoc, live: Option<&Selection>) -> Option<usize> {
+        let DocKind::Commit { entry, files } = &doc.kind else {
+            return None;
+        };
+        let path = match live {
+            Some(Selection::Commit { sha, file: Some(f) }) if *sha == entry.sha => Some(f),
+            _ => match &doc.selection {
+                Selection::Commit { file, .. } => file.as_ref(),
+                _ => None,
+            },
+        }?;
+        files.iter().position(|f| &f.path == path)
+    }
+
+    /// Arrows on a focused strip walk that commit's files.
+    fn step_file(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if self.overlays.read(cx).is_open() {
+            return;
+        }
+        let Some(doc) = self.doc.clone() else {
+            return;
+        };
+        let DocKind::Commit { entry, files } = &doc.kind else {
+            return;
+        };
+        let live = self.model.read(cx).selection.clone();
+        let current = Self::strip_index(&doc, live.as_ref());
+        let next = match current {
+            Some(i) => (i as isize + delta).clamp(0, files.len() as isize - 1) as usize,
+            None => 0,
+        };
+        if files.is_empty() || current == Some(next) {
+            return;
+        }
+        let sel = Selection::Commit {
+            sha: entry.sha.clone(),
+            file: Some(files[next].path.clone()),
+        };
+        self.model.update(cx, |m, cx| m.select(Some(sel), cx));
+        self.reveal_file(next);
+    }
+
+    /// Scroll the strip so file `i` sits inside the panel.
+    fn reveal_file(&self, i: usize) {
+        let row = STRIP_PAD + i as f32 * (STRIP_ROW_H + STRIP_GAP);
+        let view_h = f32::from(self.strip_scroll.bounds().size.height);
+        if view_h <= 0.0 {
+            return;
+        }
+        let top = -f32::from(self.strip_scroll.offset().y);
+        if row < top {
+            self.strip_scroll.set_offset(point(px(0.), px(-row)));
+        } else if row + STRIP_ROW_H > top + view_h {
+            self.strip_scroll
+                .set_offset(point(px(0.), px(-(row + STRIP_ROW_H - view_h))));
+        }
+    }
+
     fn file_strip(&self, doc: &DiffDoc, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let DocKind::Commit { entry, files } = &doc.kind else {
@@ -725,27 +804,31 @@ impl DiffCard {
         // The live selection drives the highlight so a click lights its row
         // before the new diff lands; otherwise the file the doc is showing
         // stays lit (it may still be on screen while the next doc loads).
-        let current = match &self.model.read(cx).selection {
-            Some(Selection::Commit { sha, file: Some(f) }) if *sha == entry.sha => Some(f.clone()),
-            _ => match &doc.selection {
-                Selection::Commit { file, .. } => file.clone(),
-                _ => None,
-            },
-        };
+        let live = self.model.read(cx).selection.clone();
+        let current = Self::strip_index(doc, live.as_ref());
         let mut col = div()
             .id("commit-files")
+            .key_context("FileStrip")
+            .track_focus(&self.focus)
+            .track_scroll(&self.strip_scroll)
+            .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.step_file(-1, cx)))
+            .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.step_file(1, cx)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.focus.focus(window, cx)),
+            )
             .w(px(240.))
             .flex_none()
             .h_full()
             .overflow_y_scroll()
             .border_r_1()
             .border_color(t.border)
-            .p(px(6.))
+            .p(px(STRIP_PAD))
             .flex()
             .flex_col()
-            .gap(px(1.));
+            .gap(px(STRIP_GAP));
         for (i, f) in files.iter().enumerate() {
-            let selected = current.as_deref() == Some(f.path.as_str());
+            let selected = current == Some(i);
             let letter = match f.status {
                 DiffFileStatus::Added => 'A',
                 DiffFileStatus::Deleted => 'D',
@@ -757,7 +840,8 @@ impl DiffCard {
             let m = self.model.clone();
             let mut row = div()
                 .id(("cf", i))
-                .h(px(30.))
+                .flex_none()
+                .h(px(STRIP_ROW_H))
                 .flex()
                 .items_center()
                 .gap(px(8.))

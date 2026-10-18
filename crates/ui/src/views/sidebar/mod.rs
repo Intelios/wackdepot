@@ -34,6 +34,11 @@ pub fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([
         gpui::KeyBinding::new("up", SelectPrev, Some("FileList")),
         gpui::KeyBinding::new("down", SelectNext, Some("FileList")),
+        // The shell binds them too, so arrows move the list before it has
+        // been clicked. Focused fields and the commit file strip bind their
+        // own arrows at a deeper context and win.
+        gpui::KeyBinding::new("up", SelectPrev, Some("Workspace")),
+        gpui::KeyBinding::new("down", SelectNext, Some("Workspace")),
         gpui::KeyBinding::new("space", ToggleStage, Some("FileList")),
         gpui::KeyBinding::new("cmd-backspace", DiscardSelected, Some("FileList")),
     ]);
@@ -104,6 +109,22 @@ impl SidebarView {
 
     pub fn focus_list(&self, window: &mut Window, cx: &mut gpui::App) {
         self.focus.focus(window, cx);
+    }
+
+    /// Arrow keys: move the selected row of whichever list is showing.
+    /// Returns whether the key belonged to a list — the workspace then parks
+    /// focus here so Space and ⌘⌫ work straight after.
+    pub fn step(&mut self, delta: isize, cx: &mut Context<Self>) -> bool {
+        // A popover over the column, or a dialog on top of everything, owns
+        // the keyboard; stepping the list behind it would be invisible.
+        if self.context.is_some() || self.overlays.read(cx).is_open() {
+            return false;
+        }
+        match self.model.read(cx).tab {
+            Tab::Changes => self.step_file(delta, cx),
+            Tab::History => self.step_history(delta, cx),
+        }
+        true
     }
 
     /// The merge / rebase / cherry-pick / revert in progress, if any.

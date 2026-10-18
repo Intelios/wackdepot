@@ -18,7 +18,7 @@ use crate::views::time::short_age;
 const ROW_H: f32 = 50.0;
 
 impl SidebarView {
-    fn step_history(&mut self, delta: isize, cx: &mut Context<Self>) {
+    pub(super) fn step_history(&mut self, delta: isize, cx: &mut Context<Self>) {
         let snap = self.model.read(cx).snap.clone();
         if snap.log.is_empty() {
             return;
@@ -63,10 +63,18 @@ impl SidebarView {
             .id("history")
             .key_context("FileList")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &SelectPrev, _, cx| this.step_history(-1, cx)))
-            .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.step_history(1, cx)))
+            .on_action(cx.listener(|this, _: &SelectPrev, _, cx| {
+                this.step(-1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &SelectNext, _, cx| {
+                this.step(1, cx);
+            }))
             .flex_1()
             .min_h_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.focus_list(window, cx)),
+            )
             .child(
                 uniform_list("history-list", count, move |range, window, cx| {
                     entity.update(cx, |this, cx| {
