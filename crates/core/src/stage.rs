@@ -344,6 +344,18 @@ pub fn stage_file(repo: &Path, path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `git add -- <paths…>` in batches — one process per 200 paths instead of
+/// one per file (stage-all on a big change set).
+pub fn stage_paths(repo: &Path, paths: &[String]) -> Result<(), String> {
+    let g = Git::new(repo);
+    for chunk in paths.chunks(200) {
+        let mut args: Vec<&str> = vec!["add", "--"];
+        args.extend(chunk.iter().map(String::as_str));
+        g.run(args)?;
+    }
+    Ok(())
+}
+
 /// `git add -A` — everything, including deletions and untracked files.
 pub fn stage_all(repo: &Path) -> Result<(), String> {
     Git::new(repo).run(["add", "-A"])?;
@@ -766,5 +778,16 @@ mod tests {
             model.extend(base[old_i..].iter().cloned());
             assert_eq!(cached(&g), model.join("\n") + "\n", "round {round}");
         }
+    }
+
+    #[test]
+    fn stage_paths_batches() {
+        let (dir, _g) = temp_repo();
+        let paths: Vec<String> = (0..450).map(|i| format!("f{i}.txt")).collect();
+        for p in &paths {
+            write_file(dir.path(), p, "x\n");
+        }
+        stage_paths(dir.path(), &paths).unwrap();
+        assert_eq!(staged_names(dir.path()).len(), 450);
     }
 }

@@ -263,13 +263,8 @@ impl RepoModel {
             _ => self.run(
                 BusyOp::Other("Staging"),
                 move |r, _| {
-                    for p in &paths {
-                        if bucket == Bucket::Conflicted {
-                            stage::mark_resolved(r, p)?;
-                        } else {
-                            stage::stage_file(r, p)?;
-                        }
-                    }
+                    // Marking conflicts resolved is also `git add`.
+                    stage::stage_paths(r, &paths)?;
                     Ok(Done::quiet().beat(Beat::Staged { paths }))
                 },
                 cx,
