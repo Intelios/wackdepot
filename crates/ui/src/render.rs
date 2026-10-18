@@ -382,7 +382,6 @@ impl Render for Shell {
                 this.dialog = Some(Dialog::Settings);
                 cx.notify();
             }))
-            .on_action(|_: &crate::CloseWindow, window, _| window.remove_window())
             .size_full()
             .font_family(".SystemUIFont")
             .text_color(theme.text)

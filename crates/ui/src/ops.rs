@@ -504,7 +504,10 @@ impl Shell {
             .iter()
             .find(|a| std::path::Path::new(&format!("/Applications/{a}.app")).exists());
         let Some(app) = app else {
-            self.notify_error("No editor found — set one in Settings (⌘,).".to_string(), cx);
+            self.notify_error(
+                "No editor found — set one in Settings (⌘,).".to_string(),
+                cx,
+            );
             return;
         };
         let ok = std::process::Command::new("open")
