@@ -21,7 +21,10 @@
 //! - [`sync`] — fetch/pull/push/clone, repo creation.
 //! - [`stash`] — stash list/push/apply/pop/drop.
 //! - [`repo`] — repo discovery (`is_repo`, `repo_root`), `git_version`.
+//! - [`blob`] — whole-file text for either side of a change (highlighting).
+//! - [`words`] — word-level highlights for paired changed lines.
 
+pub mod blob;
 pub mod branch;
 pub mod commit;
 pub mod diff;
@@ -31,6 +34,7 @@ pub mod stage;
 pub mod stash;
 pub mod status;
 pub mod sync;
+pub mod words;
 
 #[cfg(test)]
 mod testutil;

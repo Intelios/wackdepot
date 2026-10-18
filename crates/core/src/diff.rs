@@ -101,7 +101,7 @@ impl FileDiff {
 
     /// An entry for a file we know changed but have no patch for (binary,
     /// oversized, or a merge-commit file with no combined diff).
-    fn stub(path: impl Into<String>, status: DiffFileStatus) -> Self {
+    pub(crate) fn stub(path: impl Into<String>, status: DiffFileStatus) -> Self {
         Self {
             old_path: Some(path.into()),
             new_path: None,
@@ -113,17 +113,50 @@ impl FileDiff {
     }
 }
 
+/// How a diff is computed. `Default` is git's own: whitespace counts, three
+/// lines of context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DiffOptions {
+    /// `-w` — ignore all whitespace. Such a patch no longer matches the file
+    /// byte-for-byte, so callers must not stage or discard from it.
+    pub ignore_whitespace: bool,
+    /// `-U<n>` — lines of context; `None` keeps git's default (3).
+    pub context: Option<u32>,
+}
+
+impl DiffOptions {
+    fn push_args(&self, args: &mut Vec<String>) {
+        if self.ignore_whitespace {
+            args.push("-w".into());
+        }
+        if let Some(n) = self.context {
+            args.push(format!("-U{n}"));
+        }
+    }
+}
+
 /// The diff for `file` on one `side` — a [`FileDiff`] even when the patch is
 /// empty (`status: Modified`, no hunks). For untracked files the whole-file
 /// diff is synthesized from disk so it can be rendered and hunk-staged like
 /// any other addition; binary or >512KB files come back `is_binary`.
 pub fn diff(repo: &Path, file: &str, side: DiffSide) -> Result<FileDiff, String> {
+    diff_with(repo, file, side, &DiffOptions::default())
+}
+
+/// [`diff`] with explicit [`DiffOptions`].
+pub fn diff_with(
+    repo: &Path,
+    file: &str,
+    side: DiffSide,
+    opts: &DiffOptions,
+) -> Result<FileDiff, String> {
     let g = Git::new(repo);
-    let mut args = vec!["diff", "--no-color"];
+    let mut args: Vec<String> = vec!["diff".into(), "--no-color".into()];
     if side == DiffSide::Staged {
-        args.push("--cached");
+        args.push("--cached".into());
     }
-    args.extend(["--", file]);
+    opts.push_args(&mut args);
+    args.extend(["--".into(), file.to_string()]);
     let out = g.run(args)?;
     if let Some(d) = parse_diff(&out.stdout).into_iter().next() {
         return Ok(d);
@@ -272,8 +305,28 @@ pub fn parse_diff(text: &str) -> Vec<FileDiff> {
 /// up from `git diff-tree --name-only`, leaving binary-style stubs for files
 /// with no patch.
 pub fn diff_commit(repo: &Path, sha: &str) -> Result<Vec<FileDiff>, String> {
+    diff_commit_with(repo, sha, &DiffOptions::default())
+}
+
+/// [`diff_commit`] with explicit [`DiffOptions`].
+pub fn diff_commit_with(
+    repo: &Path,
+    sha: &str,
+    opts: &DiffOptions,
+) -> Result<Vec<FileDiff>, String> {
     let g = Git::new(repo);
-    let show = g.run(["show", "--format=", "--patch", "--no-color", sha])?;
+    let mut args: Vec<String> = [
+        "show",
+        "--format=",
+        "--patch",
+        "--no-color",
+        "--diff-merges=first-parent",
+    ]
+    .map(String::from)
+    .to_vec();
+    opts.push_args(&mut args);
+    args.push(sha.to_string());
+    let show = g.run(args)?;
     let mut diffs = parse_diff(&show.stdout);
 
     let names = g.run(["diff-tree", "--no-commit-id", "--name-only", "-r", sha])?;
@@ -285,6 +338,122 @@ pub fn diff_commit(repo: &Path, sha: &str) -> Result<Vec<FileDiff>, String> {
         diffs.push(FileDiff::stub(name, DiffFileStatus::Binary));
     }
     Ok(diffs)
+}
+
+/// The diff of one file inside commit `sha` (against its first parent; the
+/// empty tree for a root commit). `path` is the new-side path; for renames
+/// pass `old_path` so git pairs them. A merge-commit file with no patch, or a
+/// binary file, comes back as a binary stub.
+pub fn diff_commit_file(
+    repo: &Path,
+    sha: &str,
+    path: &str,
+    old_path: Option<&str>,
+    opts: &DiffOptions,
+) -> Result<FileDiff, String> {
+    let g = Git::new(repo);
+    let mut args: Vec<String> = [
+        "show",
+        "--format=",
+        "--patch",
+        "--no-color",
+        "-M",
+        "--diff-merges=first-parent",
+    ]
+    .map(String::from)
+    .to_vec();
+    opts.push_args(&mut args);
+    args.extend([sha.to_string(), "--".into()]);
+    if let Some(old) = old_path.filter(|o| *o != path) {
+        args.push(old.to_string());
+    }
+    args.push(path.to_string());
+    let out = g.run(args)?;
+    Ok(parse_diff(&out.stdout)
+        .into_iter()
+        .find(|d| d.path() == path || d.old_path.as_deref() == Some(path))
+        .unwrap_or_else(|| FileDiff::stub(path, DiffFileStatus::Binary)))
+}
+
+/// One file touched by a commit, with its line counts — the commit view's
+/// file strip, loaded without fetching any patch text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitFile {
+    pub path: String,
+    /// Source path for renames and copies.
+    pub old_path: Option<String>,
+    pub status: DiffFileStatus,
+    /// Lines added; `None` for binary files.
+    pub added: Option<u32>,
+    /// Lines removed; `None` for binary files.
+    pub removed: Option<u32>,
+}
+
+/// Every file `sha` changed against its first parent (root commits: against
+/// the empty tree), from `--name-status` + `--numstat`.
+pub fn commit_files(repo: &Path, sha: &str) -> Result<Vec<CommitFile>, String> {
+    let g = Git::new(repo);
+    let base = [
+        "diff-tree",
+        "--no-commit-id",
+        "-r",
+        "-M",
+        "--root",
+        "-z",
+        "--diff-merges=first-parent",
+    ];
+    let status = g.run(base.iter().copied().chain(["--name-status", sha]))?;
+    let numstat = g.run(base.iter().copied().chain(["--numstat", sha]))?;
+
+    let mut files = Vec::new();
+    let mut fields = status.stdout.split('\0').filter(|f| !f.is_empty());
+    while let Some(code) = fields.next() {
+        let kind = code.chars().next().unwrap_or('M');
+        let (old_path, path) = if matches!(kind, 'R' | 'C') {
+            let old = fields.next().unwrap_or_default().to_string();
+            let new = fields.next().unwrap_or_default().to_string();
+            (Some(old), new)
+        } else {
+            (None, fields.next().unwrap_or_default().to_string())
+        };
+        let status = match kind {
+            'A' => DiffFileStatus::Added,
+            'D' => DiffFileStatus::Deleted,
+            'R' | 'C' => DiffFileStatus::Renamed,
+            _ => DiffFileStatus::Modified,
+        };
+        files.push(CommitFile {
+            path,
+            old_path,
+            status,
+            added: None,
+            removed: None,
+        });
+    }
+
+    // numstat -z: "<a>\t<r>\t<path>\0" or, for renames, "<a>\t<r>\t\0<old>\0<new>\0".
+    let mut parts = numstat.stdout.split('\0');
+    while let Some(head) = parts.next() {
+        if head.is_empty() {
+            continue;
+        }
+        let mut cols = head.splitn(3, '\t');
+        let added = cols.next().unwrap_or("-");
+        let removed = cols.next().unwrap_or("-");
+        let mut path = cols.next().unwrap_or("").to_string();
+        if path.is_empty() {
+            let _old = parts.next();
+            path = parts.next().unwrap_or("").to_string();
+        }
+        if let Some(f) = files.iter_mut().find(|f| f.path == path) {
+            f.added = added.parse().ok();
+            f.removed = removed.parse().ok();
+            if f.added.is_none() && f.status == DiffFileStatus::Modified {
+                f.status = DiffFileStatus::Binary;
+            }
+        }
+    }
+    Ok(files)
 }
 
 // ---------------------------------------------------------------- internals
@@ -516,7 +685,7 @@ fn unquote_path(s: &str) -> String {
 
 /// Quote a path the way git does when it must (control chars, `"`, `\`,
 /// non-ASCII under default `core.quotePath`) — otherwise verbatim.
-fn git_quote(p: &str) -> String {
+pub(crate) fn git_quote(p: &str) -> String {
     if p.bytes()
         .any(|b| !(0x20..0x80).contains(&b) || b == b'"' || b == b'\\')
     {
@@ -753,5 +922,83 @@ Binary files a/pic.png and b/pic.png differ
         let first = diff_commit(dir.path(), &sha).unwrap();
         assert_eq!(first.len(), 2);
         assert!(first.iter().all(|d| d.status == DiffFileStatus::Added));
+    }
+
+    #[test]
+    fn ignore_whitespace_hides_reindent() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "f.txt", "a\n  b\n");
+        g.run(["add", "f.txt"]).unwrap();
+        commit(dir.path(), "init", "").unwrap();
+        write_file(dir.path(), "f.txt", "a\n    b\n");
+        let plain = diff_with(
+            dir.path(),
+            "f.txt",
+            DiffSide::Unstaged,
+            &DiffOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(plain.hunks.len(), 1);
+        let ws = DiffOptions {
+            ignore_whitespace: true,
+            context: None,
+        };
+        let quiet = diff_with(dir.path(), "f.txt", DiffSide::Unstaged, &ws).unwrap();
+        assert!(quiet.hunks.is_empty());
+    }
+
+    #[test]
+    fn commit_files_counts_and_renames() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "keep.txt", "1\n2\n");
+        write_file(dir.path(), "old name.txt", "same\ncontent\nhere\n");
+        write_file(dir.path(), "gone.txt", "x\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "base", "").unwrap();
+
+        write_file(dir.path(), "keep.txt", "1\n2\n3\n");
+        g.run(["mv", "old name.txt", "new name.txt"]).unwrap();
+        g.run(["rm", "-q", "gone.txt"]).unwrap();
+        write_file(dir.path(), "added.txt", "a\nb\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "change", "").unwrap();
+
+        let files = commit_files(dir.path(), "HEAD").unwrap();
+        let get = |p: &str| files.iter().find(|f| f.path == p).unwrap().clone();
+        assert_eq!(get("keep.txt").added, Some(1));
+        assert_eq!(get("keep.txt").status, DiffFileStatus::Modified);
+        let renamed = get("new name.txt");
+        assert_eq!(renamed.status, DiffFileStatus::Renamed);
+        assert_eq!(renamed.old_path.as_deref(), Some("old name.txt"));
+        assert_eq!(get("gone.txt").status, DiffFileStatus::Deleted);
+        assert_eq!(get("added.txt").added, Some(2));
+
+        let one = diff_commit_file(
+            dir.path(),
+            "HEAD",
+            "keep.txt",
+            None,
+            &DiffOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(one.hunks.len(), 1);
+        let mv = diff_commit_file(
+            dir.path(),
+            "HEAD",
+            "new name.txt",
+            Some("old name.txt"),
+            &DiffOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(mv.status, DiffFileStatus::Renamed);
+
+        // Root commits diff against the empty tree.
+        let root = g
+            .run(["rev-list", "--max-parents=0", "HEAD"])
+            .unwrap()
+            .stdout
+            .trim()
+            .to_string();
+        assert_eq!(commit_files(dir.path(), &root).unwrap().len(), 3);
     }
 }

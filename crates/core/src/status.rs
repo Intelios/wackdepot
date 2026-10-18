@@ -6,6 +6,7 @@
 //! folded in via [`is_merging`]; [`abort_merge`] lives here too so all
 //! merge-state handling sits in one module.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::git::Git;
@@ -82,6 +83,9 @@ pub struct RepoStatus {
     pub detached_at: Option<String>,
     /// `.git/MERGE_HEAD` exists — a merge is waiting on resolution/commit.
     pub merge_in_progress: bool,
+    /// The multi-step operation waiting on the user, if any (merge, rebase,
+    /// cherry-pick, revert) — drives the banner above the changes list.
+    pub operation: Option<Operation>,
     /// Unmerged paths from a merge in progress.
     pub conflicted: Vec<FileChange>,
     /// Changes in the index (X column set).
@@ -95,7 +99,10 @@ pub struct RepoStatus {
 /// Snapshot a repo's status: branch/ahead-behind info plus every changed file
 /// bucketed into `conflicted` / `staged` / `unstaged` / `untracked`.
 pub fn status(repo: &Path) -> Result<RepoStatus, String> {
+    // --no-optional-locks: a background status must never take index.lock
+    // and race a stage/commit the user just clicked.
     let out = Git::new(repo).run([
+        "--no-optional-locks",
         "status",
         "--porcelain=v2",
         "-z",
@@ -103,8 +110,138 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         "--untracked-files=normal",
     ])?;
     let mut s = parse_status_porcelain(&out.stdout);
-    s.merge_in_progress = is_merging(repo);
+    s.operation = operation(repo);
+    s.merge_in_progress = s.operation == Some(Operation::Merge);
     Ok(s)
+}
+
+/// A git operation that stopped half-way and needs the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+    Merge,
+    Rebase,
+    CherryPick,
+    Revert,
+}
+
+impl Operation {
+    /// The git subcommand that continues or aborts it.
+    fn command(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Rebase => "rebase",
+            Self::CherryPick => "cherry-pick",
+            Self::Revert => "revert",
+        }
+    }
+}
+
+/// Which operation, if any, is in progress — read from the marker files git
+/// leaves in the git dir.
+pub fn operation(repo: &Path) -> Option<Operation> {
+    let dir = git_dir(repo)?;
+    if dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists() {
+        Some(Operation::Rebase)
+    } else if dir.join("MERGE_HEAD").exists() {
+        Some(Operation::Merge)
+    } else if dir.join("CHERRY_PICK_HEAD").exists() {
+        Some(Operation::CherryPick)
+    } else if dir.join("REVERT_HEAD").exists() {
+        Some(Operation::Revert)
+    } else {
+        None
+    }
+}
+
+/// `git <op> --abort` — back to where things were before it started.
+pub fn abort_operation(repo: &Path, op: Operation) -> Result<(), String> {
+    Git::new(repo).run([op.command(), "--abort"])?;
+    Ok(())
+}
+
+/// `git <op> --continue` once conflicts are resolved and staged. The editor
+/// is pinned to `true` so git keeps its prepared message instead of opening
+/// one (there's no tty in a GUI).
+pub fn continue_operation(repo: &Path, op: Operation) -> Result<(), String> {
+    let g = Git::new(repo);
+    if op == Operation::Merge {
+        g.run(["-c", "core.editor=true", "commit", "--no-edit"])?;
+    } else {
+        g.run(["-c", "core.editor=true", op.command(), "--continue"])?;
+    }
+    Ok(())
+}
+
+/// Lines added and removed per path, for the `+n −m` on each changes row.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LineStats {
+    /// Worktree vs index, plus untracked files counted from disk.
+    pub unstaged: HashMap<String, (u32, u32)>,
+    /// Index vs HEAD.
+    pub staged: HashMap<String, (u32, u32)>,
+}
+
+/// `git diff --numstat` for both sides. Binary files are left out. Untracked
+/// text files (under 512KB) count every line as added.
+pub fn line_stats(repo: &Path, untracked: &[FileChange]) -> Result<LineStats, String> {
+    let g = Git::new(repo);
+    let unstaged = g.run(["--no-optional-locks", "diff", "--numstat", "-z", "-M"])?;
+    let staged = g.run([
+        "--no-optional-locks",
+        "diff",
+        "--cached",
+        "--numstat",
+        "-z",
+        "-M",
+    ])?;
+    let mut stats = LineStats {
+        unstaged: parse_numstat(&unstaged.stdout),
+        staged: parse_numstat(&staged.stdout),
+    };
+    for f in untracked {
+        let path = repo.join(&f.path);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > 512 * 1024 {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if bytes.iter().take(8192).any(|&b| b == 0) {
+            continue;
+        }
+        // Same count as `str::lines`: every newline, plus an unterminated tail.
+        let lines = bytes.iter().filter(|&&b| b == b'\n').count()
+            + usize::from(bytes.last().is_some_and(|&b| b != b'\n'));
+        stats.unstaged.insert(f.path.clone(), (lines as u32, 0));
+    }
+    Ok(stats)
+}
+
+/// Parse `--numstat -z`: `a\tr\tpath\0`, or `a\tr\t\0old\0new\0` for renames.
+/// Binary entries (`-\t-`) are skipped.
+fn parse_numstat(raw: &str) -> HashMap<String, (u32, u32)> {
+    let mut map = HashMap::new();
+    let mut parts = raw.split('\0');
+    while let Some(head) = parts.next() {
+        if head.is_empty() {
+            continue;
+        }
+        let mut cols = head.splitn(3, '\t');
+        let added = cols.next().and_then(|a| a.parse().ok());
+        let removed = cols.next().and_then(|r| r.parse().ok());
+        let mut path = cols.next().unwrap_or("").to_string();
+        if path.is_empty() {
+            let _old = parts.next();
+            path = parts.next().unwrap_or("").to_string();
+        }
+        if let (Some(a), Some(r)) = (added, removed) {
+            map.insert(path, (a, r));
+        }
+    }
+    map
 }
 
 /// Parse the raw `-z` output of `git status --porcelain=v2 --branch`.
@@ -228,13 +365,19 @@ pub fn is_merging(repo: &Path) -> bool {
 
 /// The repo-specific `MERGE_HEAD` path, or `None` if it can't be resolved.
 fn merge_head_path(repo: &Path) -> Option<PathBuf> {
+    Some(git_dir(repo)?.join("MERGE_HEAD"))
+}
+
+/// This worktree's own git dir (`.git`, or `.git/worktrees/<name>` for a
+/// linked worktree).
+fn git_dir(repo: &Path) -> Option<PathBuf> {
     let out = Git::new(repo)
         .try_run(["rev-parse", "--absolute-git-dir"])
         .ok()?;
     if !out.ok() {
         return None;
     }
-    Some(PathBuf::from(out.stdout.trim()).join("MERGE_HEAD"))
+    Some(PathBuf::from(out.stdout.trim()))
 }
 
 /// Bail out of an in-progress merge — `git merge --abort`.
@@ -394,5 +537,22 @@ mod tests {
         assert!(git_out(&wg, ["merge", "other"]).status != 0);
         assert!(is_merging(&wt));
         wg.run(["merge", "--abort"]).unwrap();
+    }
+
+    #[test]
+    fn line_stats_cover_both_sides_and_untracked() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "a.txt", "1\n2\n");
+        g.run(["add", "a.txt"]).unwrap();
+        commit(dir.path(), "init", "").unwrap();
+        write_file(dir.path(), "a.txt", "1\nTWO\n3\n");
+        g.run(["add", "a.txt"]).unwrap();
+        write_file(dir.path(), "a.txt", "1\nTWO\n3\n4\n");
+        write_file(dir.path(), "new.txt", "x\ny\nz");
+        let st = status(dir.path()).unwrap();
+        let stats = line_stats(dir.path(), &st.untracked).unwrap();
+        assert_eq!(stats.staged.get("a.txt"), Some(&(2, 1)));
+        assert_eq!(stats.unstaged.get("a.txt"), Some(&(1, 0)));
+        assert_eq!(stats.unstaged.get("new.txt"), Some(&(3, 0)));
     }
 }
