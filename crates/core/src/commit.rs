@@ -4,6 +4,7 @@
 //! History entries are parsed from `git log` using ASCII unit/record
 //! separators (`\x1f` / `\x1e`) so commit bodies can't break the format.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::git::Git;
@@ -45,6 +46,127 @@ pub fn commit(repo: &Path, summary: &str, description: &str) -> Result<(), Strin
     let message = format!("{summary}\n\n{}", description.trim_end());
     g.run_stdin(["commit", "-F", "-"], &message)?;
     Ok(())
+}
+
+/// Extra shape for a commit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommitOptions {
+    /// Replace the tip commit instead of adding one (`--amend`). Allowed with
+    /// nothing staged — that just rewrites the message.
+    pub amend: bool,
+    /// `(name, email)` pairs added as `Co-authored-by:` trailers.
+    pub co_authors: Vec<(String, String)>,
+}
+
+/// [`commit`] with [`CommitOptions`]. Returns the new commit's full SHA.
+pub fn commit_with(
+    repo: &Path,
+    summary: &str,
+    description: &str,
+    opts: &CommitOptions,
+) -> Result<String, String> {
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return Err("Couldn't commit — the summary is empty.".into());
+    }
+    let g = Git::new(repo);
+    if !opts.amend && g.run(["diff", "--cached", "--quiet"]).is_ok() {
+        return Err("Couldn't commit — nothing is staged.".into());
+    }
+    let mut message = summary.to_string();
+    let description = description.trim_end();
+    if !description.is_empty() {
+        message.push_str("\n\n");
+        message.push_str(description);
+    }
+    if !opts.co_authors.is_empty() {
+        message.push_str("\n\n");
+        for (name, email) in &opts.co_authors {
+            message.push_str(&format!("Co-authored-by: {name} <{email}>\n"));
+        }
+    }
+    let mut args = vec!["commit", "-F", "-"];
+    if opts.amend {
+        args.push("--amend");
+    }
+    g.run_stdin(args, &message)?;
+    Ok(g.run(["rev-parse", "HEAD"])?.stdout.trim().to_string())
+}
+
+/// The tip commit's message as `(summary, description)` — prefills the
+/// composer when amending.
+pub fn head_message(repo: &Path) -> Result<(String, String), String> {
+    let out = Git::new(repo).run(["log", "-1", "--format=%s%x1f%b"])?;
+    let (subject, body) = out
+        .stdout
+        .split_once('\x1f')
+        .unwrap_or((out.stdout.as_str(), ""));
+    Ok((subject.trim().to_string(), body.trim_end().to_string()))
+}
+
+/// Commits on `HEAD` that no remote has yet: `@{u}..HEAD`, or everything
+/// not on any remote-tracking branch when there's no upstream.
+pub fn unpushed_shas(repo: &Path) -> Result<HashSet<String>, String> {
+    let g = Git::new(repo);
+    let has_head = g
+        .try_run(["rev-parse", "--verify", "--quiet", "HEAD"])
+        .map(|o| o.ok())
+        .unwrap_or(false);
+    if !has_head {
+        return Ok(HashSet::new());
+    }
+    let upstream = g
+        .try_run(["rev-parse", "--verify", "--quiet", "@{u}"])
+        .map(|o| o.ok())
+        .unwrap_or(false);
+    let out = if upstream {
+        g.run(["rev-list", "--max-count=1000", "@{u}..HEAD"])?
+    } else {
+        g.run(["rev-list", "--max-count=1000", "HEAD", "--not", "--remotes"])?
+    };
+    Ok(out.stdout.lines().map(str::to_string).collect())
+}
+
+/// How a revert or cherry-pick ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickOutcome {
+    /// A new commit landed.
+    Clean,
+    /// git stopped on conflicts — the repo is now mid-operation (see
+    /// [`crate::status::operation`]) waiting for resolve + continue/abort.
+    Conflicts,
+}
+
+/// `git revert --no-edit <sha>` (merges revert against their first parent).
+pub fn revert(repo: &Path, sha: &str) -> Result<PickOutcome, String> {
+    pick(repo, "revert", sha)
+}
+
+/// `git cherry-pick <sha>` onto the current branch.
+pub fn cherry_pick(repo: &Path, sha: &str) -> Result<PickOutcome, String> {
+    pick(repo, "cherry-pick", sha)
+}
+
+fn pick(repo: &Path, verb: &str, sha: &str) -> Result<PickOutcome, String> {
+    let g = Git::new(repo);
+    let parents = g.run(["rev-list", "--parents", "-n", "1", sha])?;
+    let is_merge = parents.stdout.split_whitespace().count() > 2;
+    let mut args = vec![verb];
+    if verb == "revert" {
+        args.push("--no-edit");
+    }
+    if is_merge {
+        args.extend(["-m", "1"]);
+    }
+    args.push(sha);
+    let out = g.try_run(&args)?;
+    if out.ok() {
+        return Ok(PickOutcome::Clean);
+    }
+    if crate::status::operation(repo).is_some() {
+        return Ok(PickOutcome::Conflicts);
+    }
+    Err(crate::git::failure_message(&out))
 }
 
 /// The configured commit author — `(user.name, user.email)`. `Err` when git
@@ -112,7 +234,15 @@ pub fn list_log(repo: &Path, limit: usize) -> Result<Vec<LogEntry>, String> {
         return Ok(Vec::new());
     }
     let limit = limit.max(1).to_string();
-    let out = g.run(["log", &format!("--format={LOG_FMT}"), "-n", &limit])?;
+    // --date-order keeps every parent below all of its children, which the
+    // history graph relies on, while staying close to plain date order.
+    let out = g.run([
+        "log",
+        "--date-order",
+        &format!("--format={LOG_FMT}"),
+        "-n",
+        &limit,
+    ])?;
     Ok(parse_log(&out.stdout))
 }
 
@@ -251,5 +381,79 @@ mod tests {
         stage_all(dir.path()).unwrap();
         commit(dir.path(), "two", "").unwrap();
         assert!(tip_is_unpushed(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn amend_and_co_authors() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "a.txt", "1\n");
+        crate::stage::stage_all(dir.path()).unwrap();
+        let opts = CommitOptions {
+            amend: false,
+            co_authors: vec![("Ada".into(), "ada@example.com".into())],
+        };
+        let sha = commit_with(dir.path(), "first", "body", &opts).unwrap();
+        let msg = g.run(["log", "-1", "--format=%B"]).unwrap().stdout;
+        assert!(msg.contains("Co-authored-by: Ada <ada@example.com>"));
+        assert_eq!(head_message(dir.path()).unwrap().0, "first");
+
+        // Amend with nothing staged just rewrites the message.
+        let amended = commit_with(
+            dir.path(),
+            "renamed",
+            "",
+            &CommitOptions {
+                amend: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_ne!(sha, amended);
+        assert_eq!(list_log(dir.path(), 10).unwrap().len(), 1);
+        assert_eq!(
+            head_message(dir.path()).unwrap(),
+            ("renamed".into(), String::new())
+        );
+        // No upstream: every local commit counts as unpushed.
+        assert!(unpushed_shas(dir.path()).unwrap().contains(&amended));
+    }
+
+    #[test]
+    fn revert_and_cherry_pick() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "a.txt", "1\n");
+        crate::stage::stage_all(dir.path()).unwrap();
+        commit(dir.path(), "base", "").unwrap();
+        g.run(["checkout", "-q", "-b", "side"]).unwrap();
+        write_file(dir.path(), "b.txt", "side\n");
+        crate::stage::stage_all(dir.path()).unwrap();
+        let side = commit_with(dir.path(), "side work", "", &CommitOptions::default()).unwrap();
+        g.run(["checkout", "-q", "main"]).unwrap();
+
+        assert_eq!(cherry_pick(dir.path(), &side).unwrap(), PickOutcome::Clean);
+        assert!(dir.path().join("b.txt").exists());
+        let head = g
+            .run(["rev-parse", "HEAD"])
+            .unwrap()
+            .stdout
+            .trim()
+            .to_string();
+        assert_eq!(revert(dir.path(), &head).unwrap(), PickOutcome::Clean);
+        assert!(!dir.path().join("b.txt").exists());
+
+        // A conflicting pick leaves the repo mid cherry-pick.
+        write_file(dir.path(), "b.txt", "main\n");
+        crate::stage::stage_all(dir.path()).unwrap();
+        commit(dir.path(), "clash", "").unwrap();
+        assert_eq!(
+            cherry_pick(dir.path(), &side).unwrap(),
+            PickOutcome::Conflicts
+        );
+        assert_eq!(
+            crate::status::operation(dir.path()),
+            Some(crate::status::Operation::CherryPick)
+        );
+        crate::status::abort_operation(dir.path(), crate::status::Operation::CherryPick).unwrap();
+        assert_eq!(crate::status::operation(dir.path()), None);
     }
 }

@@ -108,6 +108,27 @@ impl Git {
         Err(run_failure(&out, &args))
     }
 
+    /// Like [`Git::run`], but hands stderr to `on_line` as git writes it.
+    /// Progress meters redraw with `\r`, so both `\r` and `\n` end a line.
+    pub fn run_streaming<I, S>(
+        &self,
+        args: I,
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<GitOutput, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let args: Vec<S> = args.into_iter().collect();
+        let mut cmd = self.command();
+        cmd.args(&args);
+        let out = stream(cmd, on_line)?;
+        if out.ok() {
+            return Ok(out);
+        }
+        Err(run_failure(&out, &args))
+    }
+
     /// Like [`Git::run`] but pipes `input` into git's stdin.
     pub fn run_stdin<I, S>(&self, args: I, input: &str) -> Result<GitOutput, String>
     where
@@ -204,6 +225,56 @@ fn polish(line: &str) -> String {
 
 fn spawn_err(e: std::io::Error) -> String {
     format!("Couldn't launch git — {e}. Is it installed?")
+}
+
+/// Run `cmd` with stdout collected on a helper thread and stderr read here,
+/// line by line (split on `\r` and `\n`), into `on_line`.
+pub(crate) fn stream(mut cmd: Command, on_line: &mut dyn FnMut(&str)) -> Result<GitOutput, String> {
+    use std::io::Read;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(spawn_err)?;
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let mut all = Vec::new();
+    let mut pending = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let n = match stderr.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        all.extend_from_slice(&chunk[..n]);
+        for &b in &chunk[..n] {
+            if b == b'\r' || b == b'\n' {
+                if !pending.is_empty() {
+                    on_line(&String::from_utf8_lossy(&pending));
+                    pending.clear();
+                }
+            } else {
+                pending.push(b);
+            }
+        }
+    }
+    if !pending.is_empty() {
+        on_line(&String::from_utf8_lossy(&pending));
+    }
+    let status = child.wait().map_err(spawn_err)?;
+    let stdout = reader.join().unwrap_or_default();
+    Ok(GitOutput {
+        status: status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        // Progress redraws use \r; keep the last state of each line.
+        stderr: String::from_utf8_lossy(&all)
+            .split('\n')
+            .map(|l| l.rsplit('\r').find(|s| !s.is_empty()).unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    })
 }
 
 fn finish(result: std::io::Result<Output>) -> Result<GitOutput, String> {

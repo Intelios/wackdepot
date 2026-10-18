@@ -23,12 +23,18 @@
 //! - [`repo`] — repo discovery (`is_repo`, `repo_root`), `git_version`.
 //! - [`blob`] — whole-file text for either side of a change (highlighting).
 //! - [`words`] — word-level highlights for paired changed lines.
+//! - [`graph`] — history lanes laid out from commit parents.
+//! - [`progress`] — git progress-meter parsing for live sync feedback.
+//! - [`config`] — global identity (`user.name` / `user.email`).
 
 pub mod blob;
 pub mod branch;
 pub mod commit;
+pub mod config;
 pub mod diff;
 mod git;
+pub mod graph;
+pub mod progress;
 pub mod repo;
 pub mod stage;
 pub mod stash;

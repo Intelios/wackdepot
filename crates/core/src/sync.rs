@@ -7,31 +7,61 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::git::{Git, failure_message};
+use crate::progress::Progress;
+
+/// Receives live progress from a network op.
+pub type OnProgress<'a> = &'a mut dyn FnMut(Progress);
+
+/// Feed parsed progress meters from git's stderr into `on`.
+fn meter<'a>(on: OnProgress<'a>) -> impl FnMut(&str) + 'a {
+    move |line: &str| {
+        if let Some(p) = crate::progress::parse(line) {
+            on(p);
+        }
+    }
+}
 
 /// `git fetch --all --prune`. Returns the last lines of progress output.
 pub fn fetch(repo: &Path) -> Result<String, String> {
-    let out = Git::new(repo).run(["fetch", "--all", "--prune"])?;
+    fetch_with_progress(repo, &mut |_| {})
+}
+
+/// [`fetch`], reporting progress as it goes.
+pub fn fetch_with_progress(repo: &Path, on: OnProgress) -> Result<String, String> {
+    let out = Git::new(repo)
+        .run_streaming(["fetch", "--all", "--prune", "--progress"], &mut meter(on))?;
     Ok(progress_tail(&out.stdout, &out.stderr))
 }
 
 /// `git pull` — fetch + merge the tracked upstream. Returns the output tail.
 pub fn pull(repo: &Path) -> Result<String, String> {
-    let out = Git::new(repo).run(["pull"])?;
+    pull_with_progress(repo, &mut |_| {})
+}
+
+/// [`pull`], reporting progress as it goes.
+pub fn pull_with_progress(repo: &Path, on: OnProgress) -> Result<String, String> {
+    let out = Git::new(repo).run_streaming(["pull", "--progress"], &mut meter(on))?;
     Ok(progress_tail(&out.stdout, &out.stderr))
 }
 
 /// `git push`, or `git push -u origin HEAD` when the branch has no upstream
 /// yet — so first pushes wire up tracking automatically.
 pub fn push(repo: &Path) -> Result<String, String> {
+    push_with_progress(repo, &mut |_| {})
+}
+
+/// [`push`], reporting progress as it goes.
+pub fn push_with_progress(repo: &Path, on: OnProgress) -> Result<String, String> {
     let g = Git::new(repo);
     let has_upstream = g
         .try_run(["rev-parse", "--verify", "--quiet", "@{u}"])
         .map(|o| o.ok())
         .unwrap_or(false);
+    let mut sink = meter(on);
     let out = if has_upstream {
-        g.run(["push"])?
+        g.run_streaming(["push", "--progress"], &mut sink)?
     } else {
-        g.run(["push", "-u", "origin", "HEAD"])?
+        g.run_streaming(["push", "--progress", "-u", "origin", "HEAD"], &mut sink)?
     };
     Ok(progress_tail(&out.stdout, &out.stderr))
 }
@@ -40,6 +70,16 @@ pub fn push(repo: &Path) -> Result<String, String> {
 /// repo's path. `name` overrides the directory name git would derive from the
 /// URL; otherwise the `Cloning into '…'` line (or the URL tail) decides.
 pub fn clone(url: &str, dest_parent: &Path, name: Option<&str>) -> Result<PathBuf, String> {
+    clone_with_progress(url, dest_parent, name, &mut |_| {})
+}
+
+/// [`clone`], reporting progress as it goes.
+pub fn clone_with_progress(
+    url: &str,
+    dest_parent: &Path,
+    name: Option<&str>,
+    on: OnProgress,
+) -> Result<PathBuf, String> {
     let mut args = vec![
         "clone".to_string(),
         "--progress".to_string(),
@@ -48,7 +88,7 @@ pub fn clone(url: &str, dest_parent: &Path, name: Option<&str>) -> Result<PathBu
     if let Some(n) = name {
         args.push(n.to_string());
     }
-    let out = run_global_with_cwd(dest_parent, &args)?;
+    let out = run_global_with_cwd(dest_parent, &args, &mut meter(on))?;
     if let Some(n) = name {
         return Ok(dest_parent.join(n));
     }
@@ -76,20 +116,18 @@ fn cloning_into(stderr: &str) -> Option<String> {
 
 /// `run_global` inside a specific working directory — needed for clone, which
 /// has no repo yet.
-fn run_global_with_cwd(cwd: &Path, args: &[String]) -> Result<crate::git::GitOutput, String> {
+fn run_global_with_cwd(
+    cwd: &Path,
+    args: &[String],
+    on_line: &mut dyn FnMut(&str),
+) -> Result<crate::git::GitOutput, String> {
     use std::process::{Command, Stdio};
-    let out = Command::new("git")
-        .env("GIT_TERMINAL_PROMPT", "0")
+    let mut cmd = Command::new("git");
+    cmd.env("GIT_TERMINAL_PROMPT", "0")
         .args(args)
         .current_dir(cwd)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("Couldn't launch git — {e}. Is it installed?"))?;
-    let out = crate::git::GitOutput {
-        status: out.status.code().unwrap_or(-1),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-    };
+        .stdin(Stdio::null());
+    let out = crate::git::stream(cmd, on_line)?;
     if out.ok() {
         return Ok(out);
     }

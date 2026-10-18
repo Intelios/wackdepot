@@ -60,6 +60,36 @@ pub fn create_branch(repo: &Path, name: &str, base: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// `git branch -m <old> <new>` — renames, keeping the upstream config.
+pub fn rename_branch(repo: &Path, old: &str, new: &str) -> Result<(), String> {
+    let new = new.trim();
+    if new.is_empty() {
+        return Err("Couldn't rename — the new name is empty.".into());
+    }
+    Git::new(repo).run(["branch", "-m", old, new])?;
+    Ok(())
+}
+
+/// `git tag [-a -m <message>] <name> <target>` — a lightweight tag, or an
+/// annotated one when there's a message.
+pub fn create_tag(
+    repo: &Path,
+    name: &str,
+    target: &str,
+    message: Option<&str>,
+) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Couldn't create the tag — the name is empty.".into());
+    }
+    let g = Git::new(repo);
+    match message.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => g.run(["tag", "-a", name, target, "-m", m])?,
+        None => g.run(["tag", name, target])?,
+    };
+    Ok(())
+}
+
 /// `git checkout <name>`. When the switch would clobber local changes, git's
 /// own message ("Your local changes … would be overwritten") is already the
 /// right user-facing error and comes through verbatim.
@@ -164,5 +194,27 @@ mod tests {
         commit(dir.path(), "init", "").unwrap();
         g.run(["checkout", "--detach", "HEAD"]).unwrap();
         assert_eq!(current_branch(dir.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn rename_and_tag() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "a.txt", "1\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "init", "").unwrap();
+        create_branch(dir.path(), "topic", "HEAD").unwrap();
+        rename_branch(dir.path(), "topic", "feature").unwrap();
+        let names: Vec<String> = list_branches(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
+        assert!(names.contains(&"feature".to_string()) && !names.contains(&"topic".to_string()));
+
+        create_tag(dir.path(), "v1", "HEAD", None).unwrap();
+        create_tag(dir.path(), "v2", "HEAD", Some("Release two")).unwrap();
+        let tags = g.run(["tag", "-n1"]).unwrap().stdout;
+        assert!(tags.contains("v1") && tags.contains("Release two"));
+        assert!(create_tag(dir.path(), "v1", "HEAD", None).is_err());
     }
 }

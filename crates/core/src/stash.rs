@@ -13,25 +13,56 @@ pub struct StashEntry {
     pub name: String,
     /// The reflog subject — "WIP on main: <sha> <subject>" or a custom message.
     pub message: String,
+    /// The stash commit — stable while indices shift as stashes come and go.
+    pub sha: String,
 }
 
 /// All stashes, newest first. An empty stash list is `Ok(vec![])`.
 pub fn stash_list(repo: &Path) -> Result<Vec<StashEntry>, String> {
-    let out = Git::new(repo).run(["stash", "list", "--format=%gd%x1f%gs"])?;
+    let out = Git::new(repo).run(["stash", "list", "--format=%gd%x1f%H%x1f%gs"])?;
     Ok(out
         .stdout
         .lines()
         .filter_map(|line| {
-            let (name, message) = line.split_once('\x1f')?;
+            let mut f = line.splitn(3, '\x1f');
+            let name = f.next()?;
+            let sha = f.next()?;
+            let message = f.next().unwrap_or_default();
             if name.is_empty() {
                 return None;
             }
             Some(StashEntry {
                 name: name.to_string(),
                 message: message.to_string(),
+                sha: sha.to_string(),
             })
         })
         .collect())
+}
+
+/// What to do with a stash picked from the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StashAction {
+    Apply,
+    Pop,
+    Drop,
+}
+
+/// Apply, pop or drop the stash whose commit is `sha`, wherever it sits in
+/// the list now — a stash pushed since the list was read shifts every
+/// `stash@{n}`, and acting on a stale index would hit the wrong one.
+pub fn stash_entry_action(repo: &Path, sha: &str, action: StashAction) -> Result<(), String> {
+    let entry = stash_list(repo)?
+        .into_iter()
+        .find(|e| e.sha == sha)
+        .ok_or_else(|| "That stash is gone — it may have been dropped already.".to_string())?;
+    let verb = match action {
+        StashAction::Apply => "apply",
+        StashAction::Pop => "pop",
+        StashAction::Drop => "drop",
+    };
+    Git::new(repo).run(["stash", verb, entry.name.as_str()])?;
+    Ok(())
 }
 
 /// Stash tracked changes (`git stash push`; `-m` when a message is given).
@@ -144,5 +175,33 @@ mod tests {
         assert!(!dir.path().join("new.txt").exists());
         stash_pop(dir.path(), None).unwrap();
         assert!(dir.path().join("new.txt").exists());
+    }
+
+    #[test]
+    fn act_on_an_older_stash_by_sha() {
+        let (dir, _g) = temp_repo();
+        write_file(dir.path(), "f.txt", "base\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "init", "").unwrap();
+
+        write_file(dir.path(), "f.txt", "first\n");
+        stash_push(dir.path(), Some("first"), false).unwrap();
+        write_file(dir.path(), "f.txt", "second\n");
+        stash_push(dir.path(), Some("second"), false).unwrap();
+
+        let list = stash_list(dir.path()).unwrap();
+        let older = list
+            .iter()
+            .find(|e| e.message.contains("first"))
+            .unwrap()
+            .clone();
+        assert_eq!(older.name, "stash@{1}");
+        stash_entry_action(dir.path(), &older.sha, StashAction::Pop).unwrap();
+        assert_eq!(crate::testutil::read_file(dir.path(), "f.txt"), "first\n");
+
+        let left = stash_list(dir.path()).unwrap();
+        assert_eq!(left.len(), 1);
+        assert!(left[0].message.contains("second"));
+        assert!(stash_entry_action(dir.path(), &older.sha, StashAction::Drop).is_err());
     }
 }
