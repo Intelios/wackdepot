@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/syntax", "crates/ui", "apps/wackdepot"]
+members = ["crates/core", "crates/github", "crates/syntax", "crates/ui", "apps/wackdepot"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +9,7 @@ publish = false
 
 [workspace.dependencies]
 wackdepot-core = { path = "crates/core" }
+wackdepot-github = { path = "crates/github" }
 wackdepot-ui = { path = "crates/ui" }
 wackdepot-syntax = { path = "crates/syntax" }
 

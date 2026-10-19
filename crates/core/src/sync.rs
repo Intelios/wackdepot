@@ -52,6 +52,7 @@ pub fn push(repo: &Path) -> Result<String, String> {
 
 /// [`push`], reporting progress as it goes.
 pub fn push_with_progress(repo: &Path, on: OnProgress) -> Result<String, String> {
+    crate::remote::ensure_publishable(&Git::new(repo))?;
     let g = Git::new(repo);
     if g.run(["remote"])?.stdout.trim().is_empty() {
         return Err(

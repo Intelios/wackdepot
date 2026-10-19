@@ -35,6 +35,7 @@ pub mod diff;
 mod git;
 pub mod graph;
 pub mod progress;
+pub mod remote;
 pub mod repo;
 pub mod stage;
 pub mod stash;

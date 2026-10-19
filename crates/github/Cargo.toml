@@ -1,0 +1,18 @@
+[package]
+name = "wackdepot-github"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "3", features = ["json", "platform-verifier"] }
+url = "2"
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.8"
+security-framework = "3"
+
+[dev-dependencies]
+tempfile.workspace = true

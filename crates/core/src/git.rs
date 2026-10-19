@@ -35,18 +35,33 @@ impl GitOutput {
 #[derive(Clone, Debug)]
 pub struct Git {
     repo: PathBuf,
+    config: Vec<(String, String)>,
 }
 
 impl Git {
     /// A runner anchored at `repo` — any path inside the working tree. Every
     /// command is invoked as `git -C <repo> <args>`.
     pub fn new(repo: impl Into<PathBuf>) -> Self {
-        Self { repo: repo.into() }
+        Self {
+            repo: repo.into(),
+            config: Vec::new(),
+        }
     }
 
     /// The directory commands run in.
     pub fn repo(&self) -> &Path {
         &self.repo
+    }
+
+    /// Command-scoped fallback: credentials are read by the helper, never
+    /// placed in config, argv or the environment.
+    pub fn with_github_credentials(mut self, executable: &Path) -> Self {
+        let quoted = executable.to_string_lossy().replace('\'', "'\\''");
+        self.config.push((
+            "credential.https://github.com.helper".into(),
+            format!("!'{quoted}' --github-credential"),
+        ));
+        self
     }
 
     fn command(&self) -> Command {
@@ -55,7 +70,19 @@ impl Git {
             .arg("-C")
             .arg(&self.repo)
             .stdin(Stdio::null());
+        for (key, value) in &self.config {
+            cmd.arg("-c").arg(format!("{key}={value}"));
+        }
         cmd
+    }
+
+    #[cfg(test)]
+    pub(crate) fn command_for_test(&self) -> String {
+        self.command()
+            .get_args()
+            .map(|s| s.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Run `git <args>`, capturing output. Never `Err`s on a non-zero exit —

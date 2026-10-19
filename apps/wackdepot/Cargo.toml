@@ -6,3 +6,4 @@ publish.workspace = true
 
 [dependencies]
 wackdepot-ui.workspace = true
+wackdepot-github.workspace = true
