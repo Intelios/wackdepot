@@ -56,6 +56,21 @@ pub fn commit_file_versions(
     }
 }
 
+/// Text at an exact pair of revisions, used by unpublished PR previews.
+pub fn versions_between(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    old_path: Option<&str>,
+    new_path: Option<&str>,
+) -> Versions {
+    let git = Git::new(repo);
+    Versions {
+        old: old_path.and_then(|path| show(&git, &format!("{base}:{path}"))),
+        new: new_path.and_then(|path| show(&git, &format!("{head}:{path}"))),
+    }
+}
+
 fn show(g: &Git, spec: &str) -> Option<String> {
     let out = g.try_run(["cat-file", "-p", spec]).ok()?;
     if !out.ok() {

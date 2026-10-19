@@ -39,6 +39,10 @@ pub fn list(repo: &Path) -> Result<Vec<Remote>, String> {
 pub fn ensure_publishable(git: &Git) -> Result<(), String> {
     let branch = crate::branch::current_branch(git.repo())?
         .ok_or("Create or switch to a branch before publishing commits.")?;
+    ensure_branch_publishable(git, &branch)
+}
+
+fn ensure_branch_publishable(git: &Git, branch: &str) -> Result<(), String> {
     let out = git.try_run([
         "config",
         "--get",
@@ -56,7 +60,7 @@ pub fn publish(
     branch: &str,
     on: &mut dyn FnMut(Progress),
 ) -> Result<(), String> {
-    ensure_publishable(git)?;
+    ensure_branch_publishable(git, branch)?;
     validate_branch(git, branch)?;
     if remote.starts_with('-') || remote.is_empty() {
         return Err("Choose a remote before publishing this branch.".into());
@@ -155,7 +159,16 @@ pub fn checkout_pull_request(
         if !existing.ok() {
             break;
         }
-        if existing.stdout.trim() == actual {
+        let marked = git
+            .try_run([
+                "config",
+                "--get",
+                &format!("branch.{local}.wackdepot-review-only"),
+            ])?
+            .stdout
+            .trim()
+            == "true";
+        if existing.stdout.trim() == actual && (input.tracking.is_some() || marked) {
             git.run(["checkout", "--no-guess", &local])?;
             return Ok(local);
         }
@@ -163,6 +176,11 @@ pub fn checkout_pull_request(
         local = format!("{}-{index}", input.local_name);
     }
     git.run(["checkout", "--no-track", "-b", &local, &private_ref])?;
+    git.run([
+        "config",
+        &format!("branch.{local}.wackdepot-review-only"),
+        "true",
+    ])?;
     if let Some((remote, branch)) = &input.tracking {
         validate_branch(git, branch)?;
         if remote.starts_with('-') {
@@ -182,11 +200,10 @@ pub fn checkout_pull_request(
             &format!("{remote}/{branch}"),
             &local,
         ])?;
-    } else {
         git.run([
             "config",
+            "--unset",
             &format!("branch.{local}.wackdepot-review-only"),
-            "true",
         ])?;
     }
     Ok(local)
@@ -213,19 +230,107 @@ pub fn cleanup(git: &Git, branch: &str, base: &str) -> Result<(), String> {
 }
 
 fn validate_branch(git: &Git, branch: &str) -> Result<(), String> {
-    if branch.is_empty()
-        || branch.starts_with('-')
-        || !git.try_run(["check-ref-format", "--branch", branch])?.ok()
-    {
+    if branch.is_empty() || branch.starts_with('-') || {
+        let checked = git.try_run(["check-ref-format", "--branch", branch])?;
+        !checked.ok() || checked.stdout.trim() != branch
+    } {
         return Err("That branch name isn't valid.".into());
     }
     Ok(())
+}
+
+pub struct BranchComparison {
+    pub files: Vec<crate::diff::FileDiff>,
+    pub commits: Vec<(String, String)>,
+    pub base_sha: String,
+    pub head_sha: String,
+}
+
+/// Preview committed changes without publishing or modifying the index.
+pub fn compare(repo: &Path, base: &str, head: &str) -> Result<BranchComparison, String> {
+    let git = Git::new(repo);
+    let resolve = |revision: &str| -> Result<String, String> {
+        if revision.starts_with('-') || revision.is_empty() {
+            return Err("Choose valid base and head branches for the comparison.".into());
+        }
+        Ok(git
+            .run([
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{revision}^{{commit}}"),
+            ])?
+            .stdout
+            .trim()
+            .to_string())
+    };
+    let base = resolve(base)?;
+    let head_sha = resolve(head)?;
+    let base_sha = git
+        .run(["merge-base", &base, &head_sha])?
+        .stdout
+        .trim()
+        .to_string();
+    let patch = git
+        .run([
+            "diff",
+            "--no-color",
+            "--find-renames",
+            &base_sha,
+            &head_sha,
+            "--",
+        ])?
+        .stdout;
+    if patch.len() > 16 * 1024 * 1024 {
+        return Err("This local comparison is too large to preview safely. Publish the branch and inspect its changes on GitHub.".into());
+    }
+    let log = git
+        .run([
+            "log",
+            "--reverse",
+            "--format=%H%x1f%B%x1e",
+            &format!("{base}..{head_sha}"),
+            "--",
+        ])?
+        .stdout;
+    let commits = log
+        .split('\x1e')
+        .filter_map(|entry| {
+            entry
+                .trim()
+                .split_once('\x1f')
+                .map(|(sha, message)| (sha.to_string(), message.trim().to_string()))
+        })
+        .collect();
+    Ok(BranchComparison {
+        files: crate::diff::parse_diff(&patch),
+        commits,
+        base_sha,
+        head_sha,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::{temp_repo, write_file};
+
+    #[test]
+    fn local_preview_excludes_uncommitted_changes_and_preserves_head() {
+        let (dir, git, _) = source();
+        write_file(dir.path(), "file", "uncommitted work\n");
+        let before = git.run(["rev-parse", "HEAD"]).unwrap().stdout;
+        let preview = compare(dir.path(), "main", "feature").unwrap();
+        assert_eq!(preview.commits.len(), 1);
+        assert_eq!(preview.files.len(), 1);
+        assert!(preview.files[0].hunks[0].patch_text.contains("+feature"));
+        assert!(!preview.files[0].hunks[0].patch_text.contains("uncommitted"));
+        assert_eq!(git.run(["rev-parse", "HEAD"]).unwrap().stdout, before);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file")).unwrap(),
+            "uncommitted work\n"
+        );
+    }
     fn source() -> (tempfile::TempDir, Git, String) {
         let (dir, git) = temp_repo();
         write_file(dir.path(), "file", "base\n");

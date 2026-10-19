@@ -12,14 +12,17 @@ use crate::{
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+type ResponseCache = Arc<Mutex<HashMap<String, (String, Vec<u8>)>>>;
+
 #[derive(Clone)]
 pub struct Client {
     transport: Arc<dyn Transport>,
     store: Arc<dyn TokenStore>,
     config: Option<OAuthConfig>,
     tokens: Arc<Mutex<Option<Tokens>>>,
-    cache: Arc<Mutex<HashMap<String, (String, Vec<u8>)>>>,
+    cache: ResponseCache,
     blocked_until: Arc<AtomicU64>,
+    account_epoch: Arc<AtomicU64>,
 }
 
 impl Client {
@@ -42,6 +45,7 @@ impl Client {
             tokens: Arc::new(Mutex::new(None)),
             cache: Arc::default(),
             blocked_until: Arc::default(),
+            account_epoch: Arc::default(),
         }
     }
     pub fn transport(&self) -> &dyn Transport {
@@ -51,20 +55,30 @@ impl Client {
         Ok(self.store.load()?.is_some())
     }
     pub fn install_tokens(&self, tokens: Tokens) -> Result<User, String> {
-        self.store.save(&tokens)?;
-        *self
-            .tokens
-            .lock()
-            .map_err(|_| "Couldn't update the GitHub session.".to_string())? = Some(tokens);
+        {
+            let mut current = self
+                .tokens
+                .lock()
+                .map_err(|_| "Couldn't update the GitHub session.".to_string())?;
+            let _session = self.store.lock_session()?;
+            self.account_epoch.fetch_add(1, Ordering::SeqCst);
+            self.store.save(&tokens)?;
+            *current = Some(tokens);
+        }
         self.invalidate();
         self.viewer()
     }
     pub fn disconnect(&self) -> Result<(), String> {
-        self.store.clear()?;
-        *self
-            .tokens
-            .lock()
-            .map_err(|_| "Couldn't close the GitHub session.".to_string())? = None;
+        {
+            let mut current = self
+                .tokens
+                .lock()
+                .map_err(|_| "Couldn't close the GitHub session.".to_string())?;
+            let _session = self.store.lock_session()?;
+            self.account_epoch.fetch_add(1, Ordering::SeqCst);
+            self.store.clear()?;
+            *current = None;
+        }
         self.invalidate();
         Ok(())
     }
@@ -81,6 +95,7 @@ impl Client {
             .tokens
             .lock()
             .map_err(|_| "Couldn't access the GitHub session.".to_string())?;
+        let _session = self.store.lock_session()?;
         // A Git credential helper may have refreshed the Keychain session.
         let mut tokens = self
             .store
@@ -104,6 +119,7 @@ impl Client {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value, String> {
+        let account_epoch = self.account_epoch.load(Ordering::SeqCst);
         if self.retry_at() > auth::now() {
             return Err(
                 "GitHub has temporarily limited requests. Wait a moment before refreshing again."
@@ -149,6 +165,9 @@ impl Client {
             response = self.transport.send(make_request(self.token(true)?))?;
         }
         self.rate_limit(&response);
+        if account_epoch != self.account_epoch.load(Ordering::SeqCst) {
+            return Err("The GitHub account changed while this request was running. Refresh with the connected account.".into());
+        }
         if response.status == 304 {
             return decode(
                 &cached
@@ -321,8 +340,17 @@ impl Client {
             None,
             10000,
         )?;
-        let reviews = self.review_info(&pull.node_id, login)?;
+        let mut reviews = self.review_info(&pull.node_id, login)?;
+        reviews.submitted = self
+            .paged::<SubmittedReview>(&format!("{root}/reviews"), None, 10000)?
+            .0
+            .into_iter()
+            .filter(|r| r.state != "PENDING")
+            .collect();
         let checks = self.checks(id, &pull.head.sha)?;
+        let merge_base_sha = self
+            .merge_base(id, &pull.base.sha, &pull.head.sha)
+            .unwrap_or_default();
         let latest = self.pull(id, number)?;
         if latest.head.sha != pull.head.sha || latest.base.sha != pull.base.sha {
             return Err(
@@ -339,6 +367,7 @@ impl Client {
             comments,
             reviews,
             checks,
+            merge_base_sha,
         })
     }
 
@@ -546,17 +575,34 @@ impl Client {
             commits.extend(next);
             page += 1;
         }
+        let head_sha = commits
+            .last()
+            .map(|c| c.sha.clone())
+            .unwrap_or_else(|| string(&first["base_commit"], "sha"));
         Ok(Comparison {
             complete: files.len() < 300 && commits.len() == total,
             files,
-            head_sha: first["commits"]
-                .as_array()
-                .and_then(|cs| cs.last())
-                .and_then(|c| c["sha"].as_str())
-                .unwrap_or_default()
-                .into(),
+            head_sha,
+            base_sha: string(&first["merge_base_commit"], "sha"),
+            local: false,
             commits,
         })
+    }
+    pub fn merge_base(&self, id: &RepositoryId, base: &str, head: &str) -> Result<String, String> {
+        let value = self.request(
+            "GET",
+            &format!(
+                "/repos/{}/compare/{}...{}?per_page=1",
+                id.full_name(),
+                encode(base),
+                encode(head)
+            ),
+            None,
+        )?;
+        value["merge_base_commit"]["sha"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "GitHub didn't return the comparison's common ancestor.".into())
     }
     pub fn create(
         &self,
@@ -587,11 +633,50 @@ impl Client {
         } else {
             from_value(self.request("POST",&format!("/repos/{}/pulls",id.full_name()),Some(json!({"title":input.title.trim(),"body":input.body,"base":input.base,"head":input.head,"head_repo":input.head_repo,"draft":input.draft})))?)?
         };
-        let metadata_error = self.assign_metadata(id, pull.number, input).err();
-        Ok(CreateOutcome {
+        Ok(self.metadata_outcome(id, pull, input))
+    }
+    pub fn retry_creation_metadata(
+        &self,
+        id: &RepositoryId,
+        number: u64,
+        input: &CreatePullRequestInput,
+    ) -> Result<CreateOutcome, String> {
+        self.pull(id, number)
+            .map(|pull| self.metadata_outcome(id, pull, input))
+    }
+    fn metadata_outcome(
+        &self,
+        id: &RepositoryId,
+        pull: PullRequest,
+        input: &CreatePullRequestInput,
+    ) -> CreateOutcome {
+        let mut remaining = input.clone();
+        let mut errors = Vec::new();
+        if !input.labels.is_empty() {
+            let mut labels = input.clone();
+            labels.reviewers.clear();
+            labels.teams.clear();
+            match self.assign_metadata(id, pull.number, &labels) {
+                Ok(()) => remaining.labels.clear(),
+                Err(error) => errors.push(error),
+            }
+        }
+        if !input.reviewers.is_empty() || !input.teams.is_empty() {
+            let mut reviewers = input.clone();
+            reviewers.labels.clear();
+            match self.assign_metadata(id, pull.number, &reviewers) {
+                Ok(()) => {
+                    remaining.reviewers.clear();
+                    remaining.teams.clear();
+                }
+                Err(error) => errors.push(error),
+            }
+        }
+        CreateOutcome {
             pull,
-            metadata_error,
-        })
+            metadata_remaining: (!errors.is_empty()).then_some(remaining),
+            metadata_error: (!errors.is_empty()).then(|| errors.join(" ")),
+        }
     }
     pub fn assign_metadata(
         &self,
@@ -631,6 +716,58 @@ impl Client {
             Some(json!({"title":title,"body":body})),
         )
         .map(|_| ())
+    }
+    pub fn replace_metadata(
+        &self,
+        id: &RepositoryId,
+        number: u64,
+        input: &CreatePullRequestInput,
+    ) -> Result<(), String> {
+        let current = self.pull(id, number)?;
+        self.request(
+            "PATCH",
+            &format!("/repos/{}/issues/{number}", id.full_name()),
+            Some(json!({"labels":input.labels})),
+        )?;
+        let remove_users = current
+            .requested_reviewers
+            .iter()
+            .filter(|u| {
+                !input
+                    .reviewers
+                    .iter()
+                    .any(|login| login.eq_ignore_ascii_case(&u.login))
+            })
+            .map(|u| u.login.clone())
+            .collect::<Vec<_>>();
+        let remove_teams = current
+            .requested_teams
+            .iter()
+            .filter(|t| !input.teams.contains(&t.slug))
+            .map(|t| t.slug.clone())
+            .collect::<Vec<_>>();
+        if !remove_users.is_empty() || !remove_teams.is_empty() {
+            self.request(
+                "DELETE",
+                &format!(
+                    "/repos/{}/pulls/{number}/requested_reviewers",
+                    id.full_name()
+                ),
+                Some(json!({"reviewers":remove_users,"team_reviewers":remove_teams})),
+            )?;
+        }
+        let mut remaining = input.clone();
+        remaining.labels.clear();
+        remaining.reviewers.retain(|login| {
+            !current
+                .requested_reviewers
+                .iter()
+                .any(|u| u.login.eq_ignore_ascii_case(login))
+        });
+        remaining
+            .teams
+            .retain(|slug| !current.requested_teams.iter().any(|t| t.slug == *slug));
+        self.assign_metadata(id, number, &remaining)
     }
     pub fn state(&self, id: &RepositoryId, number: u64, open: bool) -> Result<(), String> {
         self.request(
@@ -813,6 +950,7 @@ impl Client {
             comments: Vec::new(),
             reviews: info,
             checks: Checks::default(),
+            merge_base_sha: String::new(),
         };
         if let Some(reason) = detail.merge_blocker(&repo) {
             return Err(reason);
@@ -820,7 +958,18 @@ impl Client {
         if !repo.merge_methods().contains(&input.method) {
             return Err("That merge method is no longer enabled for this repository.".into());
         }
-        let value=self.request("PUT",&format!("/repos/{}/pulls/{number}/merge",id.full_name()),Some(json!({"sha":input.expected_head_sha,"merge_method":input.method.api(),"commit_title":input.title,"commit_message":input.body})))?;
+        let mut body = json!({"sha":input.expected_head_sha,"merge_method":input.method.api()});
+        if !input.title.trim().is_empty() {
+            body["commit_title"] = json!(input.title);
+        }
+        if !input.body.trim().is_empty() {
+            body["commit_message"] = json!(input.body);
+        }
+        let value = self.request(
+            "PUT",
+            &format!("/repos/{}/pulls/{number}/merge", id.full_name()),
+            Some(body),
+        )?;
         if value["merged"] != true {
             return Err("GitHub didn't merge this pull request. Refresh its requirements before trying again.".into());
         }
@@ -866,6 +1015,18 @@ impl Client {
             .collect())
     }
     pub fn blob(&self, id: &RepositoryId, sha: &str, path: &str) -> Result<Option<String>, String> {
+        self.blob_content(id, sha, path)
+            .map(|content| match content {
+                BlobContent::Text(text) => Some(text),
+                _ => None,
+            })
+    }
+    pub fn blob_content(
+        &self,
+        id: &RepositoryId,
+        sha: &str,
+        path: &str,
+    ) -> Result<BlobContent, String> {
         use base64::Engine;
         let value = self.request(
             "GET",
@@ -877,19 +1038,25 @@ impl Client {
             ),
             None,
         )?;
-        if value["size"].as_u64().is_none_or(|size| size > 512 * 1024)
-            || value["encoding"] != "base64"
-        {
-            return Ok(None);
+        if value["size"].as_u64().is_some_and(|size| size > 512 * 1024) {
+            return Ok(BlobContent::TooLarge);
+        }
+        if value["size"].as_u64().is_none() || value["encoding"] != "base64" {
+            return Ok(BlobContent::Unavailable);
         }
         let content = string(&value, "content").replace(['\r', '\n'], "");
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(content)
             .map_err(|_| "Couldn't decode this GitHub file.".to_string())?;
-        if bytes.len() > 512 * 1024 || bytes.iter().take(8192).any(|b| *b == 0) {
-            return Ok(None);
+        if bytes.len() > 512 * 1024 {
+            return Ok(BlobContent::TooLarge);
         }
-        Ok(String::from_utf8(bytes).ok())
+        if bytes.iter().take(8192).any(|b| *b == 0) {
+            return Ok(BlobContent::Binary);
+        }
+        Ok(String::from_utf8(bytes)
+            .map(BlobContent::Text)
+            .unwrap_or(BlobContent::Binary))
     }
 }
 
@@ -899,7 +1066,9 @@ impl Default for Client {
     }
 }
 pub fn encode(text: &str) -> String {
-    url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
+    url::form_urlencoded::byte_serialize(text.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20")
 }
 fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
     serde_json::from_slice(bytes)

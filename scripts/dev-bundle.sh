@@ -13,6 +13,10 @@ cargo build -p wackdepot
 
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/debug/wackdepot "$APP/Contents/MacOS/wackdepot"
+# Local registrations live in Keychain; distribution carries native app client
+# configuration, never a user's access or refresh token.
+rm -f "$APP/Contents/Resources/github-oauth.json"
+target/debug/wackdepot --github-export-client development "$APP/Contents/Resources/github-oauth.json" || true
 [ -f "$ROOT/assets/icon.icns" ] && cp "$ROOT/assets/icon.icns" "$APP/Contents/Resources/icon.icns"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

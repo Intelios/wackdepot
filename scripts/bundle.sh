@@ -12,6 +12,7 @@ cargo build --release -p wackdepot
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/wackdepot "$APP/Contents/MacOS/wackdepot"
+target/release/wackdepot --github-export-client production "$APP/Contents/Resources/github-oauth.json"
 
 if [ ! -f "$ROOT/assets/icon.icns" ]; then
     mkdir -p "$ROOT/assets/icon.iconset"

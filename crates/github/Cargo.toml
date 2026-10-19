@@ -16,3 +16,4 @@ security-framework = "3"
 
 [dev-dependencies]
 tempfile.workspace = true
+wackdepot-core.workspace = true

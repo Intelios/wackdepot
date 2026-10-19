@@ -350,6 +350,19 @@ pub struct ReviewInfo {
     pub pending_body: String,
     pub threads: Vec<ReviewThread>,
     pub viewed: Vec<String>,
+    pub submitted: Vec<SubmittedReview>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct SubmittedReview {
+    pub id: u64,
+    pub user: User,
+    #[serde(default)]
+    pub body: String,
+    pub state: String,
+    pub submitted_at: Option<String>,
+    #[serde(default)]
+    pub html_url: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -424,6 +437,7 @@ pub struct PullRequestDetail {
     pub comments: Vec<Comment>,
     pub reviews: ReviewInfo,
     pub checks: Checks,
+    pub merge_base_sha: String,
 }
 impl PullRequestDetail {
     pub fn merge_blocker(&self, repo: &Repository) -> Option<String> {
@@ -476,7 +490,7 @@ impl MergeMethod {
         }
     }
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct CreatePullRequestInput {
     pub title: String,
@@ -493,6 +507,7 @@ pub struct CreatePullRequestInput {
 pub struct CreateOutcome {
     pub pull: PullRequest,
     pub metadata_error: Option<String>,
+    pub metadata_remaining: Option<CreatePullRequestInput>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReviewEvent {
@@ -535,4 +550,14 @@ pub struct Comparison {
     pub commits: Vec<PullCommit>,
     pub complete: bool,
     pub head_sha: String,
+    pub base_sha: String,
+    pub local: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlobContent {
+    Text(String),
+    Binary,
+    TooLarge,
+    Unavailable,
 }

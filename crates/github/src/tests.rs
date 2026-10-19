@@ -237,3 +237,562 @@ fn optional_checks_do_not_turn_into_required_failures() {
     assert_eq!(api::check_state("action_required"), CheckState::Failing);
     assert_eq!(Checks::default().state(), CheckState::None);
 }
+
+fn pull_json(sha: &str) -> serde_json::Value {
+    json!({"number":1,"node_id":"PR_test","title":"Test PR","body":"Description","state":"open","draft":false,"html_url":"https://github.com/a/b/pull/1","user":{"login":"me"},"head":{"ref":"feature","sha":sha,"repo":null},"base":{"ref":"main","sha":"base","repo":null},"mergeable":true,"mergeable_state":"clean"})
+}
+fn repo_json() -> serde_json::Value {
+    json!({"id":1,"name":"b","owner":{"login":"a"},"default_branch":"main","permissions":{"push":true},"allow_squash_merge":true})
+}
+fn review_responses(state: &str) -> Vec<serde_json::Value> {
+    vec![
+        json!({"data":{"node":{"mergeStateStatus":state,"reviewDecision":"APPROVED","viewerCanUpdate":true,"reviews":{"nodes":[]},"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}),
+        json!({"data":{"node":{"files":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}),
+    ]
+}
+fn repo_id() -> RepositoryId {
+    RepositoryId {
+        owner: "a".into(),
+        name: "b".into(),
+    }
+}
+
+#[test]
+fn conditional_get_reuses_only_the_matching_response() {
+    let (client, transport) = client(vec![]);
+    transport.responses.lock().unwrap().extend([
+        http::Response {
+            status: 200,
+            headers: std::collections::HashMap::from([("etag".into(), "revision-1".into())]),
+            body: json!({"login":"me"}).to_string().into_bytes(),
+        },
+        http::Response {
+            status: 304,
+            ..Default::default()
+        },
+    ]);
+    assert_eq!(client.viewer().unwrap().login, "me");
+    assert_eq!(client.viewer().unwrap().login, "me");
+    assert!(
+        transport.requests.lock().unwrap()[1]
+            .headers
+            .iter()
+            .any(|(key, value)| key == "If-None-Match" && value == "revision-1")
+    );
+}
+
+#[test]
+fn creation_survives_metadata_failure_without_creating_another_pr() {
+    let (client, transport) = client(vec![json!([]), pull_json("tip")]);
+    transport.responses.lock().unwrap().extend([
+        http::Response {
+            status: 403,
+            body: json!({"message":"Reviewers cannot be assigned"})
+                .to_string()
+                .into_bytes(),
+            ..Default::default()
+        },
+        http::Response {
+            status: 200,
+            body: json!([pull_json("tip")]).to_string().into_bytes(),
+            ..Default::default()
+        },
+        http::Response {
+            status: 200,
+            body: json!([]).to_string().into_bytes(),
+            ..Default::default()
+        },
+    ]);
+    let input = CreatePullRequestInput {
+        title: "Test".into(),
+        base: "main".into(),
+        head: "me:feature".into(),
+        labels: vec!["bug".into()],
+        ..Default::default()
+    };
+    let created = client.create(&repo_id(), &input).unwrap();
+    assert_eq!(created.pull.number, 1);
+    assert!(created.metadata_error.is_some());
+    assert!(
+        client
+            .create(&repo_id(), &input)
+            .unwrap()
+            .metadata_error
+            .is_none()
+    );
+    assert_eq!(
+        transport
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "POST" && r.url.ends_with("/pulls"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn uncertain_create_is_reconciled_before_retry() {
+    let (client, transport) = client(vec![json!([])]);
+    let input = CreatePullRequestInput {
+        title: "Test".into(),
+        base: "main".into(),
+        head: "me:feature".into(),
+        ..Default::default()
+    };
+    assert!(
+        client
+            .create(&repo_id(), &input)
+            .unwrap_err()
+            .contains("didn't confirm")
+    );
+    transport
+        .responses
+        .lock()
+        .unwrap()
+        .push_back(http::Response {
+            status: 200,
+            body: json!([pull_json("tip")]).to_string().into_bytes(),
+            ..Default::default()
+        });
+    assert_eq!(client.create(&repo_id(), &input).unwrap().pull.number, 1);
+    assert_eq!(
+        transport
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "POST" && r.url.ends_with("/pulls"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn merge_revalidates_and_sends_the_reviewed_sha() {
+    let sha = "1".repeat(40);
+    let mut responses = vec![repo_json(), pull_json(&sha)];
+    responses.extend(review_responses("CLEAN"));
+    responses.push(json!({"merged":true}));
+    let (client, transport) = client(responses);
+    client
+        .merge(
+            &repo_id(),
+            1,
+            "me",
+            &MergeInput {
+                method: MergeMethod::Squash,
+                expected_head_sha: sha.clone(),
+                title: String::new(),
+                body: String::new(),
+            },
+        )
+        .unwrap();
+    let requests = transport.requests.lock().unwrap();
+    let merge = requests.last().unwrap();
+    assert_eq!(merge.method, "PUT");
+    let body: serde_json::Value = serde_json::from_slice(merge.body.as_ref().unwrap()).unwrap();
+    assert_eq!(body["sha"], sha);
+    assert_eq!(body["merge_method"], "squash");
+    assert!(body.get("commit_title").is_none());
+}
+
+#[test]
+fn stale_and_blocked_merges_never_send_a_merge_request() {
+    let sha = "1".repeat(40);
+    let (stale, stale_transport) = client(vec![repo_json(), pull_json(&sha)]);
+    assert!(
+        stale
+            .merge(
+                &repo_id(),
+                1,
+                "me",
+                &MergeInput {
+                    method: MergeMethod::Squash,
+                    expected_head_sha: "0".repeat(40),
+                    title: String::new(),
+                    body: String::new()
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        !stale_transport
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.method == "PUT")
+    );
+    for state in ["BLOCKED", "BEHIND", "DIRTY", "UNKNOWN"] {
+        let mut responses = vec![repo_json(), pull_json(&sha)];
+        responses.extend(review_responses(state));
+        let (client, transport) = client(responses);
+        assert!(
+            client
+                .merge(
+                    &repo_id(),
+                    1,
+                    "me",
+                    &MergeInput {
+                        method: MergeMethod::Squash,
+                        expected_head_sha: sha.clone(),
+                        title: String::new(),
+                        body: String::new()
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            !transport
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.method == "PUT")
+        );
+    }
+}
+
+#[test]
+fn multiline_left_comment_keeps_old_side_coordinates() {
+    let sha = "1".repeat(40);
+    let (client, transport) = client(vec![pull_json(&sha), json!({})]);
+    client
+        .comment_line(
+            &repo_id(),
+            1,
+            &ReviewAnchor {
+                path: "renamed file.rs".into(),
+                side: DiffSide::Left,
+                line: 8,
+                start_line: Some(5),
+                head_sha: sha.clone(),
+            },
+            "Review this deletion.",
+        )
+        .unwrap();
+    let requests = transport.requests.lock().unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(requests[1].body.as_ref().unwrap()).unwrap();
+    assert_eq!(body["side"], "LEFT");
+    assert_eq!(body["start_side"], "LEFT");
+    assert_eq!(body["start_line"], 5);
+    assert_eq!(body["line"], 8);
+    assert_eq!(body["commit_id"], sha);
+}
+
+#[test]
+fn binary_oversized_and_missing_content_are_distinct() {
+    let (client, _) = client(vec![
+        json!({"size":3,"encoding":"base64","content":"YQBi"}),
+        json!({"size":900000,"encoding":"none"}),
+        json!({"size":4,"encoding":"none"}),
+        json!({"size":0,"encoding":"base64","content":""}),
+    ]);
+    assert_eq!(
+        client.blob_content(&repo_id(), "tip", "a b.bin").unwrap(),
+        BlobContent::Binary
+    );
+    assert_eq!(
+        client.blob_content(&repo_id(), "tip", "large").unwrap(),
+        BlobContent::TooLarge
+    );
+    assert_eq!(
+        client.blob_content(&repo_id(), "tip", "missing").unwrap(),
+        BlobContent::Unavailable
+    );
+    assert_eq!(
+        client.blob_content(&repo_id(), "tip", "empty").unwrap(),
+        BlobContent::Text(String::new())
+    );
+}
+
+#[test]
+fn account_changes_discard_responses_already_in_flight() {
+    struct Blocking {
+        entered: std::sync::mpsc::Sender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl http::Transport for Blocking {
+        fn send(&self, _: http::Request) -> Result<http::Response, String> {
+            self.entered.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok(http::Response {
+                status: 200,
+                headers: std::collections::HashMap::from([("etag".into(), "old".into())]),
+                body: json!({"login":"old-account"}).to_string().into_bytes(),
+            })
+        }
+    }
+    let (entered, wait) = std::sync::mpsc::channel();
+    let (resume, release) = std::sync::mpsc::channel();
+    let store = Arc::new(MemoryStore::default());
+    store
+        .save(&auth::Tokens {
+            access_token: "old".into(),
+            refresh_token: None,
+            expires_at: None,
+            refresh_expires_at: None,
+        })
+        .unwrap();
+    let client = Client::with_transport(
+        Arc::new(Blocking {
+            entered,
+            release: Mutex::new(release),
+        }),
+        store,
+        None,
+    );
+    let worker = client.clone();
+    let pending = std::thread::spawn(move || worker.viewer());
+    wait.recv().unwrap();
+    client.disconnect().unwrap();
+    resume.send(()).unwrap();
+    assert!(
+        pending
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .contains("account changed")
+    );
+    assert!(!client.connected().unwrap());
+}
+
+#[test]
+fn unreadable_drafts_are_backed_up_before_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = drafts::DraftStore::at(dir.path().into());
+    store.save(1, 2, 3, &drafts::Draft::default()).unwrap();
+    let path = dir.path().join("1/2/3.json");
+    std::fs::write(&path, "incomplete JSON").unwrap();
+    assert!(store.load(1, 2, 3).is_err());
+    store
+        .save(
+            1,
+            2,
+            3,
+            &drafts::Draft {
+                review_body: "Recovered".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("unreadable"))
+    );
+    assert_eq!(store.load(1, 2, 3).unwrap().review_body, "Recovered");
+}
+
+fn draft_detail() -> PullRequestDetail {
+    PullRequestDetail {
+        pull: serde_json::from_value(pull_json("tip")).unwrap(),
+        files: vec![],
+        files_complete: true,
+        commits: vec![],
+        comments: vec![],
+        reviews: ReviewInfo::default(),
+        checks: Checks::default(),
+        merge_base_sha: "base".into(),
+    }
+}
+
+#[test]
+fn lost_comment_response_reconciles_without_erasing_new_input() {
+    let mut detail = draft_detail();
+    let comment = |id| {
+        serde_json::from_value::<Comment>(json!({"id":id,"node_id":"node","body":"Done","user":{"login":"me"},"created_at":"now"})).unwrap()
+    };
+    detail.comments.push(comment(1));
+    let intent = drafts::PendingWrite::new(drafts::WriteKind::Conversation, "Done".into(), &detail);
+    assert!(!intent.confirmed(&detail, "me"));
+    detail.comments.push(comment(2));
+    assert!(intent.confirmed(&detail, "me"));
+    assert!(!intent.confirmed(&detail, "someone-else"));
+    let mut draft = drafts::Draft {
+        pending_write: Some(intent),
+        conversation_body: "A new message typed during posting".into(),
+        ..Default::default()
+    };
+    assert!(draft.reconcile(&detail, "me"));
+    assert_eq!(
+        draft.conversation_body,
+        "A new message typed during posting"
+    );
+    assert!(draft.pending_write.is_none());
+}
+
+#[test]
+fn review_recovery_requires_the_same_anchor_and_a_new_comment() {
+    let mut detail = draft_detail();
+    let anchor = ReviewAnchor {
+        path: "renamed.rs".into(),
+        side: DiffSide::Left,
+        line: 8,
+        start_line: Some(3),
+        head_sha: "tip".into(),
+    };
+    let write = drafts::PendingWrite::new(
+        drafts::WriteKind::Inline {
+            anchor: anchor.clone(),
+            immediate: false,
+        },
+        "Review these lines".into(),
+        &detail,
+    );
+    detail.reviews.threads.push(ReviewThread {
+        id: "thread".into(),
+        path: anchor.path.clone(),
+        line: Some(8),
+        start_line: Some(3),
+        side: DiffSide::Right,
+        comments: vec![ReviewComment {
+            id: "new".into(),
+            body: write.body.clone(),
+            author: "me".into(),
+            pending: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    assert!(!write.confirmed(&detail, "me"));
+    detail.reviews.threads[0].side = DiffSide::Left;
+    assert!(write.confirmed(&detail, "me"));
+    detail.reviews.threads[0].outdated = true;
+    assert!(!write.confirmed(&detail, "me"));
+    detail.reviews.threads[0].outdated = false;
+    let mut draft = drafts::Draft {
+        pending_write: Some(write),
+        comments: vec![drafts::LocalComment {
+            anchor,
+            body: "Review these lines".into(),
+        }],
+        ..Default::default()
+    };
+    assert!(draft.reconcile(&detail, "me"));
+    assert!(draft.comments.is_empty());
+}
+
+#[test]
+fn submitted_review_and_thread_reply_recover_after_restart() {
+    let mut detail = draft_detail();
+    let intent = drafts::PendingWrite::new(
+        drafts::WriteKind::Review {
+            event: "REQUEST_CHANGES".into(),
+        },
+        "Please adjust this".into(),
+        &detail,
+    );
+    let draft = drafts::Draft {
+        pending_write: Some(intent),
+        review_body: "Please adjust this".into(),
+        ..Default::default()
+    };
+    let mut recovered: drafts::Draft =
+        serde_json::from_slice(&serde_json::to_vec(&draft).unwrap()).unwrap();
+    detail.reviews.submitted.push(SubmittedReview {
+        id: 10,
+        user: User {
+            login: "me".into(),
+            ..Default::default()
+        },
+        body: "Please adjust this".into(),
+        state: "CHANGES_REQUESTED".into(),
+        submitted_at: Some("now".into()),
+        ..Default::default()
+    });
+    assert!(recovered.reconcile(&detail, "me"));
+    assert!(recovered.review_body.is_empty());
+    let intent = drafts::PendingWrite::new(
+        drafts::WriteKind::Reply {
+            thread: "thread".into(),
+        },
+        "Reply".into(),
+        &detail,
+    );
+    detail.reviews.threads.push(ReviewThread {
+        id: "other-thread".into(),
+        comments: vec![ReviewComment {
+            id: "new".into(),
+            body: "Reply".into(),
+            author: "me".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    assert!(!intent.confirmed(&detail, "me"));
+    detail.reviews.threads[0].id = "thread".into();
+    assert!(intent.confirmed(&detail, "me"));
+}
+
+#[test]
+fn partial_metadata_retry_only_repeats_the_failed_assignment() {
+    let (client, transport) = client(vec![json!([]), pull_json("tip"), json!([])]);
+    transport.responses.lock().unwrap().extend([
+        http::Response {
+            status: 403,
+            body: json!({"message":"Reviewers cannot be assigned"})
+                .to_string()
+                .into_bytes(),
+            ..Default::default()
+        },
+        http::Response {
+            status: 200,
+            body: pull_json("tip").to_string().into_bytes(),
+            ..Default::default()
+        },
+        http::Response {
+            status: 200,
+            body: json!({}).to_string().into_bytes(),
+            ..Default::default()
+        },
+    ]);
+    let input = CreatePullRequestInput {
+        title: "Test".into(),
+        base: "main".into(),
+        head: "me:feature".into(),
+        labels: vec!["bug".into()],
+        reviewers: vec!["reviewer".into()],
+        ..Default::default()
+    };
+    let outcome = client.create(&repo_id(), &input).unwrap();
+    let remaining = outcome.metadata_remaining.unwrap();
+    assert!(remaining.labels.is_empty());
+    assert_eq!(remaining.reviewers, vec!["reviewer"]);
+    assert!(
+        client
+            .retry_creation_metadata(&repo_id(), outcome.pull.number, &remaining)
+            .unwrap()
+            .metadata_error
+            .is_none()
+    );
+    let requests = transport.requests.lock().unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.method == "POST" && r.url.ends_with("/labels"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.method == "POST" && r.url.ends_with("/pulls"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.method == "POST" && r.url.ends_with("/requested_reviewers"))
+            .count(),
+        2
+    );
+}

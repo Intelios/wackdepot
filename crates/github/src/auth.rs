@@ -23,7 +23,7 @@ pub fn now() -> u64 {
         .as_secs()
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OAuthConfig {
     pub client_id: String,
     pub client_secret: String,
@@ -36,10 +36,143 @@ impl OAuthConfig {
         let secret = std::env::var("WACKDEPOT_GITHUB_CLIENT_SECRET")
             .ok()
             .or_else(|| option_env!("WACKDEPOT_GITHUB_CLIENT_SECRET").map(str::to_string));
-        match (id,secret) {
-            (Some(client_id),Some(client_secret)) if !client_id.is_empty() && !client_secret.is_empty() => Ok(Self { client_id,client_secret }),
-            _ => Err("GitHub sign-in needs this build's OAuth client configuration. See docs/GITHUB_SETUP.md to configure a development build.".into()),
+        match (id, secret) {
+            (Some(client_id), Some(client_secret)) => {
+                return Self {
+                    client_id,
+                    client_secret,
+                }
+                .validate();
+            }
+            (None, None) => {}
+            _ => return Err("Set both GitHub OAuth client values for this build.".into()),
         }
+        if let Ok(executable) = std::env::current_exe()
+            && let Some(contents) = executable.parent().and_then(std::path::Path::parent)
+        {
+            let file = contents.join("Resources/github-oauth.json");
+            if file.exists() {
+                let bytes = std::fs::read(file)
+                    .map_err(|_| "Couldn't read this app's GitHub client configuration.")?;
+                return serde_json::from_slice::<Self>(&bytes)
+                    .map_err(|_| "This app's GitHub client configuration is invalid.".to_string())?
+                    .validate();
+            }
+        }
+        Self::registered(if cfg!(debug_assertions) { "development" } else { "production" })?
+            .ok_or_else(|| "GitHub sign-in needs this build's OAuth client configuration. See docs/GITHUB_SETUP.md to configure a development build.".into())
+    }
+
+    fn validate(self) -> Result<Self, String> {
+        if self.client_id.trim().is_empty() || self.client_secret.trim().is_empty() {
+            return Err(
+                "The GitHub OAuth client ID and client secret must both be present.".into(),
+            );
+        }
+        Ok(self)
+    }
+
+    pub fn registered(flavor: &str) -> Result<Option<Self>, String> {
+        if !matches!(flavor, "development" | "production") {
+            return Err("Choose the development or production GitHub OAuth client.".into());
+        }
+        match security_framework::passwords::get_generic_password(
+            "com.wackdepot.github.oauth-client",
+            flavor,
+        ) {
+            Ok(bytes) => serde_json::from_slice::<Self>(&bytes)
+                .map_err(|_| "Couldn't read the registered GitHub OAuth client.".to_string())?
+                .validate()
+                .map(Some),
+            Err(e) if e.code() == -25300 => Ok(None),
+            Err(_) => Err("Couldn't access the GitHub OAuth client in macOS Keychain.".into()),
+        }
+    }
+
+    /// Configure both native application registrations without putting credentials
+    /// in shell history or command arguments. User access tokens use other items.
+    pub fn configure_from_stdin() -> Result<(), String> {
+        use std::io::{BufRead, IsTerminal};
+        struct EchoGuard(bool);
+        impl Drop for EchoGuard {
+            fn drop(&mut self) {
+                if self.0 {
+                    let _ = std::process::Command::new("/bin/stty").arg("echo").status();
+                }
+            }
+        }
+        let terminal = std::io::stdin().is_terminal();
+        if terminal {
+            eprintln!(
+                "Paste the two OAuth client registrations as one JSON line, then press Return. Input is hidden."
+            );
+            let status = std::process::Command::new("/bin/stty")
+                .arg("-echo")
+                .status()
+                .map_err(|_| "Couldn't hide credential input in this terminal.".to_string())?;
+            if !status.success() {
+                return Err("Couldn't hide credential input in this terminal.".into());
+            }
+        }
+        let _echo = EchoGuard(terminal);
+        let mut line = String::new();
+        std::io::stdin()
+            .lock()
+            .take(16 * 1024)
+            .read_line(&mut line)
+            .map_err(|_| "Couldn't read the GitHub OAuth registrations.".to_string())?;
+        Self::configure_json(&line)?;
+        eprintln!("\nBoth GitHub OAuth clients are configured in macOS Keychain.");
+        Ok(())
+    }
+
+    /// Owner setup shared by the command line and the opt-in debug setup view.
+    pub fn configure_json(json: &str) -> Result<(), String> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Registrations {
+            development: OAuthConfig,
+            production: OAuthConfig,
+        }
+        let registrations: Registrations = serde_json::from_str(json).map_err(|_| {
+            "Provide a JSON object containing development and production OAuth clients.".to_string()
+        })?;
+        for (flavor, config) in [
+            ("development", registrations.development),
+            ("production", registrations.production),
+        ] {
+            let config = config.validate()?;
+            let bytes = serde_json::to_vec(&config)
+                .map_err(|_| "Couldn't prepare the GitHub OAuth client.".to_string())?;
+            security_framework::passwords::set_generic_password(
+                "com.wackdepot.github.oauth-client",
+                flavor,
+                &bytes,
+            )
+            .map_err(|_| "Couldn't save the GitHub OAuth client in macOS Keychain.".to_string())?;
+        }
+        Ok(())
+    }
+
+    /// Bundle only application credentials. Never exports a user's session.
+    pub fn export_registered(flavor: &str, path: &std::path::Path) -> Result<(), String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let config = if std::env::var_os("WACKDEPOT_GITHUB_CLIENT_ID").is_some() {
+            Self::configured()?
+        } else {
+            Self::registered(flavor)?.ok_or_else(|| format!("Configure the {flavor} GitHub OAuth client before bundling. See docs/GITHUB_SETUP.md."))?
+        };
+        let bytes = serde_json::to_vec(&config)
+            .map_err(|_| "Couldn't prepare the bundled GitHub client.".to_string())?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|_| "Couldn't create the bundled GitHub OAuth configuration.".to_string())?;
+        file.write_all(&bytes)
+            .map_err(|_| "Couldn't save the bundled GitHub OAuth configuration.".into())
     }
 }
 
@@ -55,9 +188,41 @@ pub struct Tokens {
 }
 
 pub trait TokenStore: Send + Sync {
+    /// Serialize refresh-token rotation across the app and Git helpers.
+    fn lock_session(&self) -> Result<Option<std::fs::File>, String> {
+        Ok(None)
+    }
     fn load(&self) -> Result<Option<Tokens>, String>;
     fn save(&self, tokens: &Tokens) -> Result<(), String>;
     fn clear(&self) -> Result<(), String>;
+}
+
+/// Ephemeral credentials for integration tests and explicit development QA.
+/// Production sessions use Keychain. This store never writes a token to disk.
+#[derive(Default)]
+pub struct EphemeralTokens(std::sync::Mutex<Option<Tokens>>);
+impl TokenStore for EphemeralTokens {
+    fn load(&self) -> Result<Option<Tokens>, String> {
+        self.0
+            .lock()
+            .map(|tokens| tokens.clone())
+            .map_err(|_| "Couldn't read the temporary GitHub session.".into())
+    }
+    fn save(&self, tokens: &Tokens) -> Result<(), String> {
+        *self
+            .0
+            .lock()
+            .map_err(|_| "Couldn't update the temporary GitHub session.".to_string())? =
+            Some(tokens.clone());
+        Ok(())
+    }
+    fn clear(&self) -> Result<(), String> {
+        *self
+            .0
+            .lock()
+            .map_err(|_| "Couldn't close the temporary GitHub session.".to_string())? = None;
+        Ok(())
+    }
 }
 
 pub struct Keychain;
@@ -71,6 +236,31 @@ impl Keychain {
     }
 }
 impl TokenStore for Keychain {
+    fn lock_session(&self) -> Result<Option<std::fs::File>, String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let home = std::env::var_os("HOME")
+            .ok_or("Couldn't find the app support folder for the GitHub session.")?;
+        let directory = std::path::PathBuf::from(home)
+            .join("Library/Application Support/WackDepot")
+            .join(if cfg!(debug_assertions) {
+                "github-dev"
+            } else {
+                "github"
+            });
+        std::fs::create_dir_all(&directory)
+            .map_err(|_| "Couldn't create the GitHub session folder.".to_string())?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(directory.join("session.lock"))
+            .map_err(|_| "Couldn't open the GitHub session lock.".to_string())?;
+        file.lock()
+            .map_err(|_| "Couldn't reserve the GitHub session for renewal.".to_string())?;
+        Ok(Some(file))
+    }
     fn load(&self) -> Result<Option<Tokens>, String> {
         match security_framework::passwords::get_generic_password(Self::service(),"github.com") {
             Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|_|"Couldn't read the saved GitHub session. Reconnect GitHub in Settings.".into()),
@@ -314,6 +504,7 @@ pub fn credential_helper(operation: &str) -> Result<(), String> {
         return Ok(());
     }
     let store = Keychain;
+    let _session = store.lock_session()?;
     let Some(mut tokens) = store.load()? else {
         return Ok(());
     };
