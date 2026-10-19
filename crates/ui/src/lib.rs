@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod components;
+pub mod github;
 pub mod icons;
 pub mod model;
 pub mod motion;

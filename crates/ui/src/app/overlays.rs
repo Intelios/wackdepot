@@ -26,6 +26,7 @@ pub enum Pending {
 }
 
 pub enum Dialog {
+    Task(TaskConfirmation),
     Confirm {
         action: ConfirmAction,
         pending: Option<Pending>,
@@ -33,6 +34,14 @@ pub enum Dialog {
     Clone(Entity<CloneDialog>),
     NewRepo(Entity<NewRepoDialog>),
     Name(Entity<NameDialog>),
+}
+
+pub struct TaskConfirmation {
+    pub title: String,
+    pub body: String,
+    pub label: String,
+    pub danger: bool,
+    pub action: Box<dyn FnOnce(&mut gpui::App)>,
 }
 
 struct Toast {
@@ -61,6 +70,11 @@ impl Overlays {
 
     pub fn is_open(&self) -> bool {
         self.dialog.is_some()
+    }
+
+    pub fn confirm_task(&mut self, confirmation: TaskConfirmation, cx: &mut Context<Self>) {
+        self.dialog = Some(Dialog::Task(confirmation));
+        cx.notify();
     }
 
     pub fn confirm(
@@ -321,6 +335,63 @@ impl Render for Overlays {
                 .tween_from(("dialog-rise", 0), 10.0, 0.0, 260.0, 0.0, POP);
             let entity = cx.entity();
             let body = match self.dialog.as_ref().expect("checked") {
+                Dialog::Task(task) => {
+                    let (title, body, label, danger) = (
+                        task.title.clone(),
+                        task.body.clone(),
+                        task.label.clone(),
+                        task.danger,
+                    );
+                    let cancel = cx.entity();
+                    let confirm = cx.entity();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(14.))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::BOLD)
+                                .text_size(px(17.))
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .id("task-confirm-body")
+                                .max_h(px(360.))
+                                .overflow_y_scroll()
+                                .text_size(px(13.))
+                                .text_color(t.text_soft)
+                                .child(body),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(px(8.))
+                                .child(button("task-cancel", "Cancel").on_click(move |_, _, cx| {
+                                    cancel.update(cx, |o, cx| o.close(cx))
+                                }))
+                                .child(
+                                    button("task-confirm", label)
+                                        .variant(if danger {
+                                            crate::components::button::Variant::Danger
+                                        } else {
+                                            crate::components::button::Variant::Primary
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            let task = confirm.update(cx, |o, cx| {
+                                                let task = o.dialog.take();
+                                                cx.notify();
+                                                task
+                                            });
+                                            if let Some(Dialog::Task(task)) = task {
+                                                (task.action)(cx);
+                                            }
+                                        }),
+                                ),
+                        )
+                        .into_any_element()
+                }
                 Dialog::Confirm { action, .. } => {
                     let action = action.clone();
                     self.confirm_card(&action, cx).into_any_element()

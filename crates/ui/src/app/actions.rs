@@ -15,6 +15,7 @@ actions!(
         NewRepository,
         ShowChanges,
         ShowHistory,
+        ShowPullRequests,
         ShowRepositories,
         ShowBranches,
         NewBranch,
@@ -49,6 +50,7 @@ pub fn register(cx: &mut App) {
         KeyBinding::new("cmd-n", NewRepository, None),
         KeyBinding::new("cmd-1", ShowChanges, None),
         KeyBinding::new("cmd-2", ShowHistory, None),
+        KeyBinding::new("cmd-3", ShowPullRequests, None),
         KeyBinding::new("cmd-t", ShowRepositories, None),
         KeyBinding::new("cmd-b", ShowBranches, None),
         KeyBinding::new("cmd-shift-n", NewBranch, None),
@@ -84,6 +86,7 @@ pub fn register(cx: &mut App) {
         Menu::new("View").items([
             MenuItem::action("Changes", ShowChanges),
             MenuItem::action("History", ShowHistory),
+            MenuItem::action("Pull Requests", ShowPullRequests),
             MenuItem::separator(),
             MenuItem::action("Repositories", ShowRepositories),
             MenuItem::action("Branches", ShowBranches),

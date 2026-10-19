@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use crate::{
@@ -20,6 +20,9 @@ pub struct Client {
     store: Arc<dyn TokenStore>,
     config: Option<OAuthConfig>,
     tokens: Arc<Mutex<Option<Tokens>>>,
+    session_loaded: Arc<AtomicBool>,
+    session_error: Arc<Mutex<Option<String>>>,
+    persistence_error: Arc<Mutex<Option<String>>>,
     cache: ResponseCache,
     blocked_until: Arc<AtomicU64>,
     account_epoch: Arc<AtomicU64>,
@@ -43,6 +46,9 @@ impl Client {
             store,
             config,
             tokens: Arc::new(Mutex::new(None)),
+            session_loaded: Arc::default(),
+            session_error: Arc::default(),
+            persistence_error: Arc::default(),
             cache: Arc::default(),
             blocked_until: Arc::default(),
             account_epoch: Arc::default(),
@@ -52,35 +58,116 @@ impl Client {
         self.transport.as_ref()
     }
     pub fn connected(&self) -> Result<bool, String> {
-        Ok(self.store.load()?.is_some())
+        let mut current = self
+            .tokens
+            .lock()
+            .map_err(|_| "Couldn't access the GitHub session.".to_string())?;
+        self.load_session(&mut current)?;
+        Ok(current.is_some())
+    }
+    fn load_session(&self, current: &mut Option<Tokens>) -> Result<(), String> {
+        if !self.session_loaded.load(Ordering::SeqCst) {
+            self.session_loaded.store(true, Ordering::SeqCst);
+            match self.store.load() {
+                Ok(tokens) => *current = tokens,
+                Err(error) => {
+                    if let Ok(mut saved) = self.session_error.lock() {
+                        *saved = Some(error.clone());
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        if let Some(error) = self.session_error.lock().ok().and_then(|e| e.clone()) {
+            return Err(error);
+        }
+        Ok(())
+    }
+    pub fn persistence_error(&self) -> Option<String> {
+        self.persistence_error.lock().ok().and_then(|e| e.clone())
+    }
+    fn persist_session(&self, tokens: &Tokens) {
+        if let Ok(mut error) = self.persistence_error.lock() {
+            *error=self.store.save(tokens).err().map(|_| "Connected for this session. macOS didn't allow saving the connection; reconnect after restarting WackDepot.".into());
+        }
     }
     pub fn install_tokens(&self, tokens: Tokens) -> Result<User, String> {
+        self.install_tokens_cancellable(tokens, &AtomicBool::new(false))
+    }
+    pub fn install_tokens_cancellable(
+        &self,
+        tokens: Tokens,
+        cancelled: &AtomicBool,
+    ) -> Result<User, String> {
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("GitHub sign-in was cancelled.".into());
+        }
+        // Validate the new identity before replacing a working Keychain session.
+        // Cancellation can occur while GitHub responds; check again under the
+        // session lock so a cancelled sign-in cannot silently replace accounts.
+        let response = self.transport.send(Request {
+            method: "GET",
+            url: "https://api.github.com/user".into(),
+            headers: vec![
+                ("Accept".into(), "application/vnd.github+json".into()),
+                ("User-Agent".into(), "WackDepot/0.1".into()),
+                ("X-GitHub-Api-Version".into(), http::API_VERSION.into()),
+                (
+                    "Authorization".into(),
+                    format!("Bearer {}", tokens.access_token),
+                ),
+            ],
+            body: None,
+        })?;
+        if !(200..300).contains(&response.status) {
+            return Err(http::error(&response));
+        }
+        let user: User = decode(&response.body)?;
+        if user.id == 0 || user.login.is_empty() {
+            return Err(
+                "GitHub didn't return a valid account identity. Reconnect in Settings.".into(),
+            );
+        }
         {
             let mut current = self
                 .tokens
                 .lock()
                 .map_err(|_| "Couldn't update the GitHub session.".to_string())?;
             let _session = self.store.lock_session()?;
+            if cancelled.load(Ordering::SeqCst) {
+                return Err("GitHub sign-in was cancelled.".into());
+            }
             self.account_epoch.fetch_add(1, Ordering::SeqCst);
-            self.store.save(&tokens)?;
+            self.persist_session(&tokens);
             *current = Some(tokens);
+            self.session_loaded.store(true, Ordering::SeqCst);
+            if let Ok(mut error) = self.session_error.lock() {
+                *error = None;
+            }
         }
         self.invalidate();
-        self.viewer()
+        Ok(user)
     }
     pub fn disconnect(&self) -> Result<(), String> {
-        {
+        let result = {
             let mut current = self
                 .tokens
                 .lock()
                 .map_err(|_| "Couldn't close the GitHub session.".to_string())?;
             let _session = self.store.lock_session()?;
             self.account_epoch.fetch_add(1, Ordering::SeqCst);
-            self.store.clear()?;
             *current = None;
-        }
+            self.session_loaded.store(true, Ordering::SeqCst);
+            if let Ok(mut error) = self.session_error.lock() {
+                *error = None;
+            }
+            if let Ok(mut error) = self.persistence_error.lock() {
+                *error = None;
+            }
+            self.store.clear()
+        };
         self.invalidate();
-        Ok(())
+        result
     }
     pub fn invalidate(&self) {
         if let Ok(mut cache) = self.cache.lock() {
@@ -95,19 +182,38 @@ impl Client {
             .tokens
             .lock()
             .map_err(|_| "Couldn't access the GitHub session.".to_string())?;
-        let _session = self.store.lock_session()?;
-        // A Git credential helper may have refreshed the Keychain session.
-        let mut tokens = self
-            .store
-            .load()?
+        self.load_session(&mut guard)?;
+        let mut tokens = guard
+            .clone()
             .ok_or("Connect GitHub in Settings to use pull requests.")?;
+        if !force
+            && tokens
+                .expires_at
+                .is_none_or(|expiry| expiry > auth::now() + 60)
+        {
+            return Ok(tokens.access_token);
+        }
+        let _session = self.store.lock_session()?;
+        // Only renewal consults Keychain again. A helper may have already
+        // rotated the session; ordinary API requests use the in-memory token.
+        if let Ok(Some(latest)) = self.store.load()
+            && latest.access_token != tokens.access_token
+            && latest.expires_at > tokens.expires_at
+            && latest
+                .expires_at
+                .is_some_and(|expiry| expiry > auth::now() + 60)
+        {
+            let access = latest.access_token.clone();
+            *guard = Some(latest);
+            return Ok(access);
+        }
         if force
             || tokens
                 .expires_at
                 .is_some_and(|expiry| expiry <= auth::now() + 60)
         {
             tokens=auth::refresh(self.config.as_ref().ok_or("This build needs its GitHub OAuth client configuration before the session can be refreshed.")?,&tokens,self.transport.as_ref())?;
-            self.store.save(&tokens)?;
+            self.persist_session(&tokens);
         }
         let token = tokens.access_token.clone();
         *guard = Some(tokens);
@@ -158,9 +264,10 @@ impl Client {
         let mut response=self.transport.send(make_request(self.token(false)?)).map_err(|error|if method=="GET" || path=="/graphql" && body.as_ref().and_then(|b|b["query"].as_str()).is_some_and(|q|q.trim_start().starts_with("query")) {error} else {"GitHub didn't confirm whether this action completed. Refresh its details before trying again.".into()})?;
         if response.status == 401
             && self
-                .store
-                .load()?
-                .is_some_and(|t| t.refresh_token.is_some())
+                .tokens
+                .lock()
+                .ok()
+                .is_some_and(|t| t.as_ref().is_some_and(|t| t.refresh_token.is_some()))
         {
             response = self.transport.send(make_request(self.token(true)?))?;
         }

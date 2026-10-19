@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 wackdepot-core.workspace = true
+wackdepot-github.workspace = true
 wackdepot-syntax.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
@@ -13,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 unicode-segmentation.workspace = true
 notify.workspace = true
+pulldown-cmark = "0.13"
 # Native glass, appearance and accessibility (macOS only, by design).
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSString", "NSObject"] }

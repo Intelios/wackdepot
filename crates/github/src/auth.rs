@@ -76,21 +76,25 @@ impl OAuthConfig {
         if !matches!(flavor, "development" | "production") {
             return Err("Choose the development or production GitHub OAuth client.".into());
         }
-        match security_framework::passwords::get_generic_password(
-            "com.wackdepot.github.oauth-client",
-            flavor,
-        ) {
+        match std::fs::read(Self::registration_path(flavor)?) {
             Ok(bytes) => serde_json::from_slice::<Self>(&bytes)
                 .map_err(|_| "Couldn't read the registered GitHub OAuth client.".to_string())?
                 .validate()
                 .map(Some),
-            Err(e) if e.code() == -25300 => Ok(None),
-            Err(_) => Err("Couldn't access the GitHub OAuth client in macOS Keychain.".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err("Couldn't read the native GitHub OAuth client configuration.".into()),
         }
     }
 
+    fn registration_path(flavor: &str) -> Result<std::path::PathBuf, String> {
+        let home = std::env::var_os("HOME").ok_or("Couldn't find the app support folder.")?;
+        Ok(std::path::PathBuf::from(home)
+            .join("Library/Application Support/WackDepot/oauth-clients")
+            .join(format!("{flavor}.json")))
+    }
+
     /// Configure both native application registrations without putting credentials
-    /// in shell history or command arguments. User access tokens use other items.
+    /// in shell history or command arguments. User access tokens stay separate.
     pub fn configure_from_stdin() -> Result<(), String> {
         use std::io::{BufRead, IsTerminal};
         struct EchoGuard(bool);
@@ -122,7 +126,7 @@ impl OAuthConfig {
             .read_line(&mut line)
             .map_err(|_| "Couldn't read the GitHub OAuth registrations.".to_string())?;
         Self::configure_json(&line)?;
-        eprintln!("\nBoth GitHub OAuth clients are configured in macOS Keychain.");
+        eprintln!("\nBoth native GitHub OAuth clients are configured.");
         Ok(())
     }
 
@@ -144,12 +148,11 @@ impl OAuthConfig {
             let config = config.validate()?;
             let bytes = serde_json::to_vec(&config)
                 .map_err(|_| "Couldn't prepare the GitHub OAuth client.".to_string())?;
-            security_framework::passwords::set_generic_password(
-                "com.wackdepot.github.oauth-client",
-                flavor,
-                &bytes,
-            )
-            .map_err(|_| "Couldn't save the GitHub OAuth client in macOS Keychain.".to_string())?;
+            let path = Self::registration_path(flavor)?;
+            std::fs::create_dir_all(path.parent().expect("configuration parent")).map_err(
+                |_| "Couldn't create the native OAuth configuration folder.".to_string(),
+            )?;
+            crate::drafts::atomic_write(&path, &bytes)?;
         }
         Ok(())
     }
@@ -227,6 +230,27 @@ impl TokenStore for EphemeralTokens {
 
 pub struct Keychain;
 impl Keychain {
+    // The interaction policy is process-wide. Serialize calls so one operation
+    // cannot restore prompts while another background read is still running.
+    fn quiet() -> Result<
+        (
+            std::sync::MutexGuard<'static, ()>,
+            security_framework::os::macos::keychain::KeychainUserInteractionLock,
+        ),
+        String,
+    > {
+        static CALL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let call = CALL
+            .lock()
+            .map_err(|_| "Couldn't access the saved GitHub connection.".to_string())?;
+        let quiet =
+            security_framework::os::macos::keychain::SecKeychain::disable_user_interaction()
+                .map_err(|_| {
+                    "Couldn't restore the saved GitHub connection. Reconnect in Settings."
+                        .to_string()
+                })?;
+        Ok((call, quiet))
+    }
     fn service() -> &'static str {
         if cfg!(debug_assertions) {
             "com.wackdepot.app.dev.github"
@@ -262,19 +286,27 @@ impl TokenStore for Keychain {
         Ok(Some(file))
     }
     fn load(&self) -> Result<Option<Tokens>, String> {
-        match security_framework::passwords::get_generic_password(Self::service(),"github.com") {
-            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|_|"Couldn't read the saved GitHub session. Reconnect GitHub in Settings.".into()),
-            Err(e) if e.code()==-25300 => Ok(None),
-            Err(_) => Err("Couldn't access the GitHub session in macOS Keychain. Unlock your login Keychain and try again.".into()),
+        let (_call, _quiet) = Self::quiet()?;
+        match security_framework::passwords::get_generic_password(Self::service(), "github.com") {
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|_| {
+                "Couldn't read the saved GitHub session. Reconnect GitHub in Settings.".into()
+            }),
+            Err(e) if e.code() == -25300 => Ok(None),
+            Err(_) => Err(
+                "Couldn't restore the saved GitHub connection. Reconnect in Settings to continue."
+                    .into(),
+            ),
         }
     }
     fn save(&self, tokens: &Tokens) -> Result<(), String> {
+        let (_call, _quiet) = Self::quiet()?;
         let bytes = serde_json::to_vec(tokens)
             .map_err(|_| "Couldn't prepare the GitHub session for Keychain.".to_string())?;
         security_framework::passwords::set_generic_password(Self::service(), "github.com", &bytes)
             .map_err(|_| "Couldn't save the GitHub session in macOS Keychain.".into())
     }
     fn clear(&self) -> Result<(), String> {
+        let (_call, _quiet) = Self::quiet()?;
         match security_framework::passwords::delete_generic_password(Self::service(), "github.com")
         {
             Ok(()) => Ok(()),

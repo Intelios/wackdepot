@@ -62,6 +62,7 @@ pub struct SidebarView {
     model: Entity<RepoModel>,
     overlays: Entity<Overlays>,
     pub composer: Entity<Composer>,
+    pull_list: Entity<crate::views::pulls::PullList>,
     focus: FocusHandle,
     motion: Motion,
     scroll: ScrollHandle,
@@ -78,9 +79,11 @@ impl SidebarView {
     pub fn new(
         model: Entity<RepoModel>,
         overlays: Entity<Overlays>,
+        pulls: Entity<crate::model::pulls::PullRequestModel>,
         cx: &mut Context<Self>,
     ) -> Self {
         let composer = cx.new(|cx| Composer::new(model.clone(), cx));
+        let pull_list = cx.new(|cx| crate::views::pulls::PullList::new(pulls.clone(), cx));
         cx.subscribe(&model, |this: &mut Self, _, e: &RepoEvent, cx| match e {
             RepoEvent::Opened => {
                 this.prev_y.clear();
@@ -96,6 +99,7 @@ impl SidebarView {
             model,
             overlays,
             composer,
+            pull_list,
             focus: cx.focus_handle(),
             motion: Motion::default(),
             scroll: ScrollHandle::new(),
@@ -114,7 +118,7 @@ impl SidebarView {
     /// Arrow keys: move the selected row of whichever list is showing.
     /// Returns whether the key belonged to a list — the workspace then parks
     /// focus here so Space and ⌘⌫ work straight after.
-    pub fn step(&mut self, delta: isize, cx: &mut Context<Self>) -> bool {
+    pub fn step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) -> bool {
         // A popover over the column, or a dialog on top of everything, owns
         // the keyboard; stepping the list behind it would be invisible.
         if self.context.is_some() || self.overlays.read(cx).is_open() {
@@ -123,6 +127,9 @@ impl SidebarView {
         match self.model.read(cx).tab {
             Tab::Changes => self.step_file(delta, cx),
             Tab::History => self.step_history(delta, cx),
+            Tab::PullRequests => self
+                .pull_list
+                .update(cx, |list, cx| list.step(delta, window, cx)),
         }
         true
     }
@@ -193,14 +200,20 @@ impl Render for SidebarView {
             .height(30.)
             .item_count("Changes", changed)
             .item("History")
+            .item("Pull Requests")
             .selected(tab.index())
             .on_select(move |i, _, cx| {
-                let tab = if i == 0 { Tab::Changes } else { Tab::History };
+                let tab = match i {
+                    0 => Tab::Changes,
+                    1 => Tab::History,
+                    _ => Tab::PullRequests,
+                };
                 m.update(cx, |m, cx| m.set_tab(tab, cx));
             });
         let list = match tab {
             Tab::Changes => self.changes_list(window, cx).into_any_element(),
             Tab::History => self.history_list(window, cx).into_any_element(),
+            Tab::PullRequests => self.pull_list.clone().into_any_element(),
         };
         let banner = self.operation_banner(cx);
         let mut col = div()

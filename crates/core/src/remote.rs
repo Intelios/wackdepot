@@ -58,12 +58,17 @@ pub fn publish(
     git: &Git,
     remote: &str,
     branch: &str,
+    expected_push_url: &str,
     on: &mut dyn FnMut(Progress),
 ) -> Result<(), String> {
     ensure_branch_publishable(git, branch)?;
     validate_branch(git, branch)?;
     if remote.starts_with('-') || remote.is_empty() {
         return Err("Choose a remote before publishing this branch.".into());
+    }
+    let actual = git.run(["remote", "get-url", "--push", "--", remote])?;
+    if actual.stdout.trim() != expected_push_url {
+        return Err("This remote's publication target changed. Refresh the repository and choose the head repository again.".into());
     }
     git.run_streaming(
         [
@@ -364,6 +369,66 @@ mod tests {
         let remotes = list(dir.path()).unwrap();
         assert_eq!(remotes[0].name, "origin");
         assert_eq!(remotes[0].push_url, "git@github.com:a/b.git");
+    }
+    #[test]
+    fn publication_checks_its_explicit_target_and_preserves_working_changes() {
+        let (dir, git, sha) = source();
+        let (dest, _) = temp_repo();
+        let target = dest.path().join("published.git");
+        Git::new(dest.path())
+            .run(["init", "--bare", target.to_str().unwrap()])
+            .unwrap();
+        let url = target.to_str().unwrap();
+        git.run(["remote", "add", "fork", url]).unwrap();
+        write_file(dir.path(), "file", "uncommitted work");
+        assert!(publish(&git, "fork", "feature", "changed-target", &mut |_| {}).is_err());
+        publish(&git, "fork", "feature", url, &mut |_| {}).unwrap();
+        assert_eq!(
+            Git::new(&target)
+                .run(["rev-parse", "refs/heads/feature"])
+                .unwrap()
+                .stdout
+                .trim(),
+            sha
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file")).unwrap(),
+            "uncommitted work"
+        );
+        assert_eq!(
+            crate::branch::current_branch(dir.path())
+                .unwrap()
+                .as_deref(),
+            Some("feature")
+        );
+    }
+
+    #[test]
+    fn existing_writable_fork_tracks_the_head_without_a_review_only_marker() {
+        let (source, _, sha) = source();
+        let (_dest, git) = temp_repo();
+        git.run(["remote", "add", "fork", source.path().to_str().unwrap()])
+            .unwrap();
+        let input = CheckoutPullRequest {
+            source: "fork".into(),
+            number: 1,
+            expected_sha: sha.clone(),
+            local_name: "feature".into(),
+            tracking: Some(("fork".into(), "feature".into())),
+        };
+        assert_eq!(
+            checkout_pull_request(&git, &input, &mut |_| {}).unwrap(),
+            "feature"
+        );
+        assert_eq!(git.run(["rev-parse", "HEAD"]).unwrap().stdout.trim(), sha);
+        ensure_publishable(&git).unwrap();
+        assert_eq!(
+            git.run(["config", "--get", "branch.feature.remote"])
+                .unwrap()
+                .stdout
+                .trim(),
+            "fork"
+        );
     }
     #[test]
     fn checkout_uses_pull_ref_and_prevents_accidental_push() {

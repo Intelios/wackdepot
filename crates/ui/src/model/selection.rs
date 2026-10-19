@@ -17,6 +17,7 @@ pub enum Tab {
     #[default]
     Changes,
     History,
+    PullRequests,
 }
 
 impl Tab {
@@ -24,6 +25,7 @@ impl Tab {
         match self {
             Tab::Changes => 0,
             Tab::History => 1,
+            Tab::PullRequests => 2,
         }
     }
 }

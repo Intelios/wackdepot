@@ -69,6 +69,7 @@ pub struct SettingsPage {
     name: Entity<TextInput>,
     email: Entity<TextInput>,
     editor: Entity<TextInput>,
+    oauth_registration: Entity<TextInput>,
     note: Option<(SharedString, bool)>,
 }
 
@@ -76,6 +77,8 @@ impl EventEmitter<SettingsEvent> for SettingsPage {}
 
 impl SettingsPage {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let session = crate::github::session(cx);
+        cx.observe(&session, |_, _, cx| cx.notify()).detach();
         let s = prefs::get(cx).clone();
         let mk = |placeholder: &str, value: Option<String>, cx: &mut Context<Self>| {
             cx.new(|cx| {
@@ -92,6 +95,7 @@ impl SettingsPage {
         let name = mk("Your Name", gname, cx);
         let email = mk("you@example.com", gemail, cx);
         let editor = mk("WackCode", s.editor_app.clone(), cx);
+        let oauth_registration = mk("Paste development and production client JSON", None, cx);
         for input in [&accent, &background] {
             cx.subscribe(input, |this: &mut Self, _, e: &TextInputEvent, cx| {
                 if *e == TextInputEvent::Submit {
@@ -124,6 +128,7 @@ impl SettingsPage {
             name,
             email,
             editor,
+            oauth_registration,
             note: None,
         }
     }
@@ -466,22 +471,120 @@ impl SettingsPage {
 
     fn integrations(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
-        div()
+        let session = crate::github::session(cx);
+        let state = session.read(cx);
+        let connecting = state.connecting;
+        let account = state.user.as_ref().map(|u| u.login.clone());
+        let error = state.error.clone();
+        let connect = session.clone();
+        let reconnect = session.clone();
+        let disconnect = session.clone();
+        let cancel = session;
+        let controls = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .when_some(account.clone(), |el, login| {
+                        el.child(
+                            div()
+                                .text_color(t.text)
+                                .child(format!("Connected as {login}")),
+                        )
+                    })
+                    .when(account.is_none(), |el| {
+                        el.child(
+                            button(
+                                "gh-connect",
+                                if connecting {
+                                    "Waiting for GitHub…"
+                                } else {
+                                    "Connect GitHub"
+                                },
+                            )
+                            .icon("pull-request")
+                            .disabled(connecting)
+                            .on_click(move |_, _, cx| connect.update(cx, |s, cx| s.connect(cx))),
+                        )
+                    })
+                    .when(connecting, |el| {
+                        el.child(
+                            button("gh-cancel", "Cancel")
+                                .ghost()
+                                .on_click(move |_, _, cx| cancel.update(cx, |s, cx| s.cancel(cx))),
+                        )
+                    })
+                    .when(account.is_some(), |el| {
+                        el.child(
+                            button("gh-reconnect", "Reconnect")
+                                .disabled(connecting)
+                                .on_click(move |_, _, cx| {
+                                    reconnect.update(cx, |s, cx| s.connect(cx))
+                                }),
+                        )
+                        .child(
+                            button("gh-disconnect", "Disconnect")
+                                .disabled(connecting)
+                                .on_click(move |_, _, cx| {
+                                    disconnect.update(cx, |s, cx| s.disconnect(cx))
+                                }),
+                        )
+                    }),
+            )
+            .when_some(error, |el, error| {
+                el.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(t.sem.danger_text)
+                        .child(error),
+                )
+            })
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(t.text_dim)
+                    .child("Authorize in your browser. Your session is stored in macOS Keychain."),
+            );
+        let mut page = div()
             .flex()
             .flex_col()
             .gap(px(14.))
             .child(self.hero("Integrations", "Services WackDepot can talk to.", accent_mark("link").size(52.), cx))
             .child(Self::block(
                 "GitHub",
-                Some("Pull requests in the branch picker, checks on the branch pill, and publishing new repositories."),
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.))
-                    .child(button("gh-connect", "Connect GitHub").icon("pull-request").disabled(true))
-                    .child(div().text_size(px(12.)).text_color(t.text_faint).child("Coming soon.")),
+                Some("Create and review pull requests, follow checks, and merge without leaving WackDepot."),
+                controls,
                 cx,
-            ))
+            ));
+        if cfg!(debug_assertions) && std::env::var("WACKDEPOT_GITHUB_SETUP").as_deref() == Ok("1") {
+            page = page.child(Self::block(
+                "Application owner setup",
+                Some("Save the two registered native OAuth clients under app support. Restart WackDepot after saving."),
+                div().flex().flex_col().gap(px(10.))
+                    .child(self.oauth_registration.clone())
+                    .child(button("gh-save-registration", "Save client registrations")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let json = this.oauth_registration.read(cx).content().to_string();
+                            this.oauth_registration.update(cx, |input, cx| input.set_content(String::new(), cx));
+                            cx.spawn(async move |this, cx| {
+                                let result = cx.background_executor().spawn(async move {
+                                    wackdepot_github::OAuthConfig::configure_json(&json)
+                                }).await;
+                                let _ = this.update(cx, |this, cx| {
+                                    this.note = Some(match result {
+                                        Ok(()) => ("Both native OAuth clients are configured. Restart WackDepot to connect.".into(), false),
+                                        Err(error) => (error.into(), true),
+                                    });
+                                    cx.notify();
+                                });
+                            }).detach();
+                        }))), cx));
+        }
+        page
     }
 
     fn about(&self, cx: &mut Context<Self>) -> impl IntoElement {

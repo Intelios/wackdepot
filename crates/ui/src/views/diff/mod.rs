@@ -3,7 +3,9 @@
 //! split, syntax-coloured, word-level emphasis, hunk actions, and
 //! line-level staging by clicking or dragging the gutter.
 
-mod text;
+mod surface;
+pub(crate) mod text;
+pub(crate) use surface::{Row, build_rows, row_tone};
 
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -27,7 +29,7 @@ use crate::components::pill_track::pill_track;
 use crate::components::seam::seam;
 use crate::components::spinner::orbit;
 use crate::model::{
-    Bucket, ConfirmAction, DiffDoc, DiffState, DocKind, RepoEvent, RepoModel, Selection,
+    Bucket, ConfirmAction, DiffDoc, DiffState, DocKind, RepoEvent, RepoModel, Selection, Tab,
     same_target,
 };
 use crate::theme::{ActiveTheme, Theme, metrics};
@@ -45,24 +47,6 @@ const STRIP_PAD: f32 = 6.0;
 const BODY_LINES: usize = 5;
 /// ~BODY_LINES of wrapped text — a single hard line can be long too.
 const BODY_CHARS: usize = 380;
-
-/// One row of the rendered diff.
-#[derive(Debug, Clone, Copy)]
-enum Row {
-    Hunk {
-        hunk: usize,
-    },
-    Line {
-        hunk: usize,
-        line: usize,
-    },
-    /// Split view: the old line on the left, the new one on the right.
-    Pair {
-        hunk: usize,
-        left: Option<usize>,
-        right: Option<usize>,
-    },
-}
 
 /// Arrows walk a commit's files while its file strip has focus.
 pub fn bind_keys(cx: &mut App) {
@@ -89,6 +73,16 @@ pub struct DiffCard {
     drag: Option<bool>,
     /// SHA of the commit whose body is expanded past its clamp.
     body_expanded: Option<String>,
+    tab: Tab,
+    remembered: [Option<SavedDiff>; 2],
+}
+
+struct SavedDiff {
+    doc: Option<Arc<DiffDoc>>,
+    rows: Rc<Vec<Row>>,
+    list: ListState,
+    strip_scroll: ScrollHandle,
+    body_expanded: Option<String>,
 }
 
 impl DiffCard {
@@ -98,7 +92,20 @@ impl DiffCard {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.subscribe(&model, |this: &mut Self, model, e: &RepoEvent, cx| {
+            if matches!(e, RepoEvent::Opened) {
+                this.remembered = [None, None];
+                this.tab = model.read(cx).tab;
+                this.set_doc(None, cx);
+            }
+            if matches!(e, RepoEvent::Selection) {
+                this.switch_tab(model.read(cx).tab, cx);
+            }
             if matches!(e, RepoEvent::Diff) {
+                if model.read(cx).tab == Tab::PullRequests
+                    || matches!(model.read(cx).diff, DiffState::Loading)
+                {
+                    return;
+                }
                 let doc = match &model.read(cx).diff {
                     DiffState::Ready(d) => Some(d.clone()),
                     _ => None,
@@ -110,6 +117,7 @@ impl DiffCard {
         })
         .detach();
         let split = prefs::get(cx).diff_split;
+        let tab = model.read(cx).tab;
         Self {
             model,
             overlays,
@@ -122,7 +130,37 @@ impl DiffCard {
             sel: BTreeSet::new(),
             drag: None,
             body_expanded: None,
+            tab,
+            remembered: [None, None],
         }
+    }
+
+    fn switch_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        if self.tab == tab {
+            return;
+        }
+        if self.tab.index() < 2 {
+            self.remembered[self.tab.index()] = Some(SavedDiff {
+                doc: self.doc.clone(),
+                rows: self.rows.clone(),
+                list: self.list.clone(),
+                strip_scroll: self.strip_scroll.clone(),
+                body_expanded: self.body_expanded.clone(),
+            });
+        }
+        self.tab = tab;
+        self.sel.clear();
+        self.drag = None;
+        if tab.index() < 2
+            && let Some(saved) = self.remembered[tab.index()].take()
+        {
+            self.doc = saved.doc;
+            self.rows = saved.rows;
+            self.list = saved.list;
+            self.strip_scroll = saved.strip_scroll;
+            self.body_expanded = saved.body_expanded;
+        }
+        cx.notify();
     }
 
     fn set_doc(&mut self, doc: Option<Arc<DiffDoc>>, cx: &mut Context<Self>) {
@@ -1035,77 +1073,6 @@ impl DiffCard {
 }
 
 /// Row background, edge colour and sigil for a line kind.
-fn row_tone(
-    t: &Theme,
-    kind: DiffLineKind,
-) -> (Option<gpui::Hsla>, Option<gpui::Hsla>, &'static str) {
-    match kind {
-        DiffLineKind::Added => (Some(t.sem.diff_add_bg), Some(t.sem.diff_add), "+"),
-        DiffLineKind::Removed => (Some(t.sem.diff_del_bg), Some(t.sem.diff_del), "−"),
-        DiffLineKind::Context | DiffLineKind::NoNewline => (None, None, ""),
-    }
-}
-
-/// Rows for a file diff: a band per hunk, then its lines (unified) or
-/// paired old/new lines (split; a run of removals beside the run of
-/// additions that follows it).
-fn build_rows(file: &FileDiff, split: bool) -> Vec<Row> {
-    let mut rows = Vec::new();
-    for (hi, h) in file.hunks.iter().enumerate() {
-        rows.push(Row::Hunk { hunk: hi });
-        if !split {
-            rows.extend((0..h.lines.len()).map(|li| Row::Line { hunk: hi, line: li }));
-            continue;
-        }
-        let lines = &h.lines;
-        let mut i = 0;
-        while i < lines.len() {
-            match lines[i].kind {
-                DiffLineKind::Context => {
-                    rows.push(Row::Pair {
-                        hunk: hi,
-                        left: Some(i),
-                        right: Some(i),
-                    });
-                    i += 1;
-                }
-                DiffLineKind::NoNewline => i += 1,
-                _ => {
-                    let mut dels = Vec::new();
-                    while i < lines.len()
-                        && matches!(
-                            lines[i].kind,
-                            DiffLineKind::Removed | DiffLineKind::NoNewline
-                        )
-                    {
-                        if lines[i].kind == DiffLineKind::Removed {
-                            dels.push(i);
-                        }
-                        i += 1;
-                    }
-                    let mut adds = Vec::new();
-                    while i < lines.len()
-                        && matches!(lines[i].kind, DiffLineKind::Added | DiffLineKind::NoNewline)
-                    {
-                        if lines[i].kind == DiffLineKind::Added {
-                            adds.push(i);
-                        }
-                        i += 1;
-                    }
-                    for k in 0..dels.len().max(adds.len()) {
-                        rows.push(Row::Pair {
-                            hunk: hi,
-                            left: dels.get(k).copied(),
-                            right: adds.get(k).copied(),
-                        });
-                    }
-                }
-            }
-        }
-    }
-    rows
-}
-
 impl Render for DiffCard {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();

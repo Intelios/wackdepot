@@ -14,7 +14,7 @@ use crate::components::button::{Variant, button, icon_button};
 use crate::components::drag::drag_strip;
 use crate::components::mark::monogram;
 use crate::components::menu::{menu_heading, menu_row, menu_separator, popover};
-use crate::components::misc::{empty_state, kbd};
+use crate::components::misc::kbd;
 use crate::components::pill_track::pill_track;
 use crate::components::spinner::orbit;
 use crate::components::text_input::{TextInput, TextInputEvent};
@@ -35,6 +35,7 @@ pub enum TitlePopover {
 pub struct TitlebarView {
     model: Entity<RepoModel>,
     overlays: Entity<Overlays>,
+    pulls: Entity<crate::model::pulls::PullRequestModel>,
     pub open: Option<TitlePopover>,
     repo_filter: Entity<TextInput>,
     branch_filter: Entity<TextInput>,
@@ -48,8 +49,10 @@ impl TitlebarView {
     pub fn new(
         model: Entity<RepoModel>,
         overlays: Entity<Overlays>,
+        pulls: Entity<crate::model::pulls::PullRequestModel>,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.observe(&pulls, |_, _, cx| cx.notify()).detach();
         cx.subscribe(&model, |this: &mut Self, _, e: &RepoEvent, cx| match e {
             RepoEvent::Beat(Beat::Pushed) => {
                 // The comet: it leaves the sync pill and the ↑ count rolls to 0.
@@ -77,6 +80,7 @@ impl TitlebarView {
         Self {
             model,
             overlays,
+            pulls,
             open: None,
             repo_filter,
             branch_filter,
@@ -538,12 +542,69 @@ impl TitlebarView {
             .on_dismiss(self.dismiss_handler(cx))
             .child(div().mb(px(6.)).child(tabs));
         if tab == 1 {
-            return pop.child(
-                div().py(px(18.)).flex().justify_center().child(
-                    empty_state("pull-request", "Pull requests are on the way")
-                        .body("Connecting GitHub will list this repo's pull requests here, with their checks."),
-                ),
-            );
+            let state = self.pulls.read(cx);
+            let loading = state.loading;
+            let connected = state.session.read(cx).user.is_some();
+            let rows = state
+                .list
+                .iter()
+                .take(8)
+                .enumerate()
+                .map(|(i, pull)| {
+                    let number = pull.number;
+                    let pulls = self.pulls.clone();
+                    let titlebar = cx.entity();
+                    menu_row(("quick-pr", i), format!("#{number} {}", pull.title))
+                        .icon("pull-request")
+                        .on_click(move |_, _, cx| {
+                            pulls.update(cx, |m, cx| m.select(number, cx));
+                            titlebar.update(cx, |t, cx| {
+                                t.close(cx);
+                            });
+                        })
+                })
+                .collect::<Vec<_>>();
+            let pulls = self.pulls.clone();
+            let git = self.model.clone();
+            let titlebar = cx.entity();
+            return pop
+                .child(
+                    div()
+                        .id("quick-pr-list")
+                        .max_h(px(340.))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .children(rows)
+                        .when(state.list.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .p(px(14.))
+                                    .text_size(px(12.))
+                                    .text_color(t.text_dim)
+                                    .child(if loading {
+                                        "Loading pull requests…"
+                                    } else if connected {
+                                        "No pull requests in the current view."
+                                    } else {
+                                        "Connect GitHub to browse pull requests."
+                                    }),
+                            )
+                        }),
+                )
+                .child(menu_separator(cx))
+                .child(
+                    menu_row("all-pull-requests", "Open Pull Requests")
+                        .icon("pull-request")
+                        .trailing(kbd("⌘3", cx))
+                        .on_click(move |_, _, cx| {
+                            git.update(cx, |m, cx| m.set_tab(crate::model::Tab::PullRequests, cx));
+                            pulls.update(cx, |m, cx| m.refresh(cx));
+                            titlebar.update(cx, |t, cx| {
+                                t.close(cx);
+                            });
+                        }),
+                );
         }
         let filter = self.branch_filter.read(cx).content().to_lowercase();
         let branches = self.model.read(cx).snap.branches.clone();
@@ -918,6 +979,27 @@ impl Render for TitlebarView {
             .child(self.repo_pill(window, cx));
         if has_repo {
             left = left.child(self.branch_pill(window, cx));
+            if let Some(pull) = self.pulls.read(cx).current.clone() {
+                let number = pull.number;
+                let state = self.pulls.read(cx).current_checks;
+                let model = self.pulls.clone();
+                left = left.child(
+                    button(
+                        "current-pr",
+                        format!(
+                            "{} #{number}",
+                            match state {
+                                wackdepot_github::CheckState::Passing => "✓",
+                                wackdepot_github::CheckState::Failing => "×",
+                                wackdepot_github::CheckState::Pending => "◌",
+                                wackdepot_github::CheckState::None => "PR",
+                            }
+                        ),
+                    )
+                    .small()
+                    .on_click(move |_, _, cx| model.update(cx, |m, cx| m.select(number, cx))),
+                );
+            }
         }
         if let Some(op) = busy_other {
             left = left.child(

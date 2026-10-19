@@ -63,11 +63,11 @@ impl SidebarView {
             .id("history")
             .key_context("FileList")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &SelectPrev, _, cx| {
-                this.step(-1, cx);
+            .on_action(cx.listener(|this, _: &SelectPrev, window, cx| {
+                this.step(-1, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &SelectNext, _, cx| {
-                this.step(1, cx);
+            .on_action(cx.listener(|this, _: &SelectNext, window, cx| {
+                this.step(1, window, cx);
             }))
             .flex_1()
             .min_h_0()

@@ -796,3 +796,166 @@ fn partial_metadata_retry_only_repeats_the_failed_assignment() {
         2
     );
 }
+
+#[test]
+fn cancelling_during_sign_in_keeps_the_existing_session() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct CancelOnResponse(Arc<AtomicBool>);
+    impl http::Transport for CancelOnResponse {
+        fn send(&self, _: http::Request) -> Result<http::Response, String> {
+            self.0.store(true, Ordering::SeqCst);
+            Ok(http::Response {
+                status: 200,
+                body: json!({"id":2,"login":"new"}).to_string().into_bytes(),
+                ..Default::default()
+            })
+        }
+    }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let store = Arc::new(MemoryStore::default());
+    let tokens = |value: &str| auth::Tokens {
+        access_token: value.into(),
+        refresh_token: None,
+        expires_at: None,
+        refresh_expires_at: None,
+    };
+    store.save(&tokens("old")).unwrap();
+    let client = Client::with_transport(
+        Arc::new(CancelOnResponse(cancelled.clone())),
+        store.clone(),
+        None,
+    );
+    assert!(
+        client
+            .install_tokens_cancellable(tokens("new"), &cancelled)
+            .unwrap_err()
+            .contains("cancelled")
+    );
+    assert_eq!(store.load().unwrap().unwrap().access_token, "old");
+}
+
+#[test]
+fn browsing_reads_credential_storage_once_for_the_entire_session() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Counted {
+        loads: AtomicUsize,
+        denied: bool,
+    }
+    impl TokenStore for Counted {
+        fn load(&self) -> Result<Option<auth::Tokens>, String> {
+            self.loads.fetch_add(1, Ordering::SeqCst);
+            if self.denied {
+                return Err("Reconnect GitHub in Settings.".into());
+            }
+            Ok(Some(auth::Tokens {
+                access_token: "in-memory".into(),
+                refresh_token: None,
+                expires_at: None,
+                refresh_expires_at: None,
+            }))
+        }
+        fn save(&self, _: &auth::Tokens) -> Result<(), String> {
+            Ok(())
+        }
+        fn clear(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let (_, transport) = client((0..20).map(|_| json!({"id":1,"login":"me"})).collect());
+    let store = Arc::new(Counted {
+        loads: AtomicUsize::new(0),
+        denied: false,
+    });
+    let session = Client::with_transport(transport, store.clone(), None);
+    assert!(session.connected().unwrap());
+    for _ in 0..20 {
+        assert_eq!(session.clone().viewer().unwrap().login, "me");
+    }
+    assert_eq!(store.loads.load(Ordering::SeqCst), 1);
+    let denied = Arc::new(Counted {
+        loads: AtomicUsize::new(0),
+        denied: true,
+    });
+    let session = Client::with_transport(Arc::new(Fake::default()), denied.clone(), None);
+    assert!(session.connected().is_err());
+    for _ in 0..20 {
+        assert!(session.viewer().is_err());
+    }
+    assert_eq!(denied.loads.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn refused_credential_save_keeps_authorized_session_in_memory() {
+    struct Unavailable;
+    impl TokenStore for Unavailable {
+        fn load(&self) -> Result<Option<auth::Tokens>, String> {
+            Err("Storage unavailable.".into())
+        }
+        fn save(&self, _: &auth::Tokens) -> Result<(), String> {
+            Err("Storage unavailable.".into())
+        }
+        fn clear(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let (_, transport) = client(vec![
+        json!({"id":1,"login":"me"}),
+        json!({"id":1,"login":"me"}),
+    ]);
+    let session = Client::with_transport(transport, Arc::new(Unavailable), None);
+    assert!(session.connected().is_err());
+    session
+        .install_tokens(auth::Tokens {
+            access_token: "authorized".into(),
+            refresh_token: None,
+            expires_at: None,
+            refresh_expires_at: None,
+        })
+        .unwrap();
+    assert!(session.connected().unwrap());
+    assert!(
+        session
+            .persistence_error()
+            .unwrap()
+            .contains("this session")
+    );
+    assert_eq!(session.viewer().unwrap().login, "me");
+}
+
+#[test]
+fn helper_rotation_is_reused_after_a_cached_token_is_rejected() {
+    let (_, transport) = client(vec![json!({"id":1,"login":"me"})]);
+    let store = Arc::new(MemoryStore::default());
+    let tokens = |value: &str, expiry| auth::Tokens {
+        access_token: value.into(),
+        refresh_token: Some("refresh".into()),
+        expires_at: Some(expiry),
+        refresh_expires_at: None,
+    };
+    store.save(&tokens("old", auth::now() + 1000)).unwrap();
+    let session = Client::with_transport(transport.clone(), store.clone(), None);
+    session.viewer().unwrap();
+    store
+        .save(&tokens("renewed-by-git", auth::now() + 2000))
+        .unwrap();
+    transport.responses.lock().unwrap().extend([
+        http::Response {
+            status: 401,
+            ..Default::default()
+        },
+        http::Response {
+            status: 200,
+            body: json!({"id":1,"login":"me"}).to_string().into_bytes(),
+            ..Default::default()
+        },
+    ]);
+    session.viewer().unwrap();
+    let requests = transport.requests.lock().unwrap();
+    assert!(
+        requests[2]
+            .headers
+            .iter()
+            .any(|(k, v)| k == "Authorization" && v == "Bearer renewed-by-git")
+    );
+    assert!(requests.iter().all(|r| !r.url.contains("access_token")));
+}

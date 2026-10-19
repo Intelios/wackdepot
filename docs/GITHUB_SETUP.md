@@ -22,7 +22,7 @@ not needed. The requested scopes are `repo`, `read:org`, `workflow`, and
 
 For a local setup, run `target/debug/wackdepot --configure-github-oauth` after
 building. It reads one JSON line with hidden terminal input and stores both
-registrations in macOS Keychain:
+registrations as native app configuration under app support:
 
 ```json
 {"development":{"client_id":"...","client_secret":"..."},"production":{"client_id":"...","client_secret":"..."}}
@@ -46,7 +46,8 @@ confidential server credential; login security depends on PKCE and callback
 validation. See [GitHub's OAuth documentation](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps).
 
 Bundle scripts export the corresponding native client registration from
-Keychain into `Contents/Resources/github-oauth.json`; release bundling fails if
+`~/Library/Application Support/WackDepot/oauth-clients/` into
+`Contents/Resources/github-oauth.json`; release bundling fails if
 the production registration is missing. Build environment configuration is also
 supported. These resources contain application credentials only. Registering an app and
 authorizing its repository access are owner actions; neither is silently done
@@ -57,11 +58,16 @@ when Connect GitHub is clicked.
 
 - Production Keychain service: `com.wackdepot.app.github`.
 - Development Keychain service: `com.wackdepot.app.dev.github`.
-- Owner's OAuth registrations: `com.wackdepot.github.oauth-client`, with
-  separate development and production items. These are separate from user sessions.
+- Owner's native OAuth registrations: `oauth-clients/development.json` and
+  `oauth-clients/production.json` under app support, with owner-only permissions.
+  These contain native client configuration, never user sessions.
 - Drafts: `~/Library/Application Support/WackDepot/github/drafts/`, with
   development drafts under `github-dev/drafts/`. Files are account/repository/PR
   scoped and created with owner-only permissions.
+- Sessions are loaded once and held in memory. API requests do not read Keychain.
+  Background credential access never opens a system prompt; denied restoration
+  offers reconnect, and a connection whose save is denied stays in memory for
+  the current session. Renewal is serialized with Git credential helpers.
 - API caches are bounded and kept in memory; disconnect invalidates in-flight
   responses and clears them. Drafts remain associated with their original
   account.

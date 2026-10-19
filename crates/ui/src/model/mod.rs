@@ -6,6 +6,7 @@ pub mod confirm;
 pub mod diff_load;
 mod ops;
 mod optimistic;
+pub mod pulls;
 pub mod selection;
 pub mod snapshot;
 
@@ -160,7 +161,7 @@ pub struct RepoModel {
     pub loaded: bool,
     pub tab: Tab,
     pub selection: Option<Selection>,
-    remembered: [Option<Selection>; 2],
+    remembered: [Option<Selection>; 3],
     pub diff: DiffState,
     diff_gen: u64,
     pub busy: Option<BusyOp>,
@@ -191,7 +192,7 @@ impl RepoModel {
             loaded: false,
             tab: Tab::Changes,
             selection: None,
-            remembered: [None, None],
+            remembered: [None, None, None],
             diff: DiffState::Empty,
             diff_gen: 0,
             busy: None,
@@ -266,7 +267,7 @@ impl RepoModel {
         self.snap = Arc::default();
         self.loaded = false;
         self.selection = None;
-        self.remembered = [None, None];
+        self.remembered = [None, None, None];
         self.diff = DiffState::Empty;
         self.watcher = watcher::watch(&root);
         cx.emit(RepoEvent::Opened);
@@ -389,6 +390,7 @@ impl RepoModel {
                 sha: c.sha.clone(),
                 file: None,
             }),
+            Tab::PullRequests => None,
         });
         cx.emit(RepoEvent::Selection);
         self.load_diff(cx);

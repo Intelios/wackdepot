@@ -56,6 +56,13 @@ pub struct Settings {
     /// Hide whitespace-only changes in diffs.
     #[serde(default)]
     pub ignore_whitespace: bool,
+    /// Explicit target repository associations; tokens never live here.
+    #[serde(default)]
+    pub github_repositories: std::collections::HashMap<PathBuf, wackdepot_github::RepositoryId>,
+    #[serde(default)]
+    pub github_merge_methods: std::collections::HashMap<String, wackdepot_github::MergeMethod>,
+    #[serde(default)]
+    pub github_disconnected: bool,
 }
 
 fn default_glass_tint() -> u8 {

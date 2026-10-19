@@ -33,6 +33,7 @@ pub fn run() {
         .with_assets(icons::IconAssets)
         .run(|cx: &mut App| {
             prefs::init(cx);
+            crate::github::init(cx);
             let input = prefs::theme_input(prefs::get(cx));
             theme::init(cx, &input);
             actions::register(cx);
@@ -74,6 +75,8 @@ pub struct Workspace {
     titlebar: Entity<TitlebarView>,
     sidebar: Entity<SidebarView>,
     diff: Entity<DiffCard>,
+    pulls: Entity<crate::model::pulls::PullRequestModel>,
+    pull_workspace: Entity<crate::views::pulls::PullWorkspace>,
     settings: Entity<SettingsPage>,
     route: Route,
     /// The column's edge is being dragged.
@@ -89,6 +92,12 @@ impl Workspace {
         cx.observe_window_activation(window, |ws: &mut Workspace, window, cx| {
             backdrop::sync_reduce_motion(cx);
             ws.backdrop.set_active(window.is_window_active(), window);
+            ws.pulls.update(cx, |m, cx| {
+                m.foreground = window.is_window_active();
+                if m.foreground {
+                    m.refresh(cx);
+                }
+            });
             cx.notify();
         })
         .detach();
@@ -96,8 +105,15 @@ impl Workspace {
 
         let model = cx.new(RepoModel::new);
         let overlays = cx.new(|_| Overlays::new(model.clone()));
-        let titlebar = cx.new(|cx| TitlebarView::new(model.clone(), overlays.clone(), cx));
-        let sidebar = cx.new(|cx| SidebarView::new(model.clone(), overlays.clone(), cx));
+        let session = crate::github::session(cx);
+        let pulls =
+            cx.new(|cx| crate::model::pulls::PullRequestModel::new(model.clone(), session, cx));
+        let pull_workspace = cx
+            .new(|cx| crate::views::pulls::PullWorkspace::new(pulls.clone(), overlays.clone(), cx));
+        let titlebar =
+            cx.new(|cx| TitlebarView::new(model.clone(), overlays.clone(), pulls.clone(), cx));
+        let sidebar =
+            cx.new(|cx| SidebarView::new(model.clone(), overlays.clone(), pulls.clone(), cx));
         let diff = cx.new(|cx| DiffCard::new(model.clone(), overlays.clone(), cx));
         let settings = cx.new(SettingsPage::new);
         cx.subscribe_in(
@@ -148,6 +164,8 @@ impl Workspace {
             titlebar,
             sidebar,
             diff,
+            pulls,
+            pull_workspace,
             settings,
             route: Route::Repo,
             resizing: false,
@@ -190,7 +208,7 @@ impl Workspace {
             return;
         }
         self.sidebar.update(cx, |s, cx| {
-            if s.step(delta, cx) {
+            if s.step(delta, window, cx) {
                 // Focus follows the list, so Space and ⌘⌫ work right after.
                 s.focus_list(window, cx);
             }
@@ -202,6 +220,9 @@ impl Workspace {
             return;
         }
         if self.titlebar.update(cx, |t, cx| t.close(cx)) {
+            return;
+        }
+        if self.pull_workspace.update(cx, |p, cx| p.dismiss(cx)) {
             return;
         }
         if self.route == Route::Settings {
@@ -218,6 +239,7 @@ impl Workspace {
         prefs::update(cx, f);
         self.model.update(cx, |m, cx| m.load_diff(cx));
         self.diff.update(cx, |d, cx| d.sync_prefs(cx));
+        self.pull_workspace.update(cx, |p, cx| p.sync_prefs(cx));
         cx.notify();
     }
 
@@ -287,7 +309,11 @@ impl Workspace {
                     .border_1()
                     .border_color(t.border_bright.opacity(0.7))
                     .overflow_hidden()
-                    .child(self.diff.clone()),
+                    .child(if self.model.read(cx).tab == Tab::PullRequests {
+                        self.pull_workspace.clone().into_any_element()
+                    } else {
+                        self.diff.clone().into_any_element()
+                    }),
             )
             .into_any_element()
     }
@@ -400,6 +426,9 @@ impl Render for Workspace {
                 }),
             )
             .on_action(cx.listener(|ws, _: &Commit, _, cx| {
+                if ws.route != Route::Repo || ws.model.read(cx).tab != Tab::Changes {
+                    return;
+                }
                 let composer = ws.sidebar.read(cx).composer.clone();
                 composer.update(cx, |c, cx| c.commit(cx));
             }))
@@ -427,6 +456,12 @@ impl Render for Workspace {
             .on_action(cx.listener(|ws, _: &ShowHistory, _, cx| {
                 ws.model.update(cx, |m, cx| m.set_tab(Tab::History, cx))
             }))
+            .on_action(cx.listener(|ws, _: &ShowPullRequests, _, cx| {
+                ws.route = Route::Repo;
+                ws.model
+                    .update(cx, |m, cx| m.set_tab(Tab::PullRequests, cx));
+                ws.pulls.update(cx, |m, cx| m.refresh(cx));
+            }))
             .on_action(
                 cx.listener(|ws, _: &SelectPrev, window, cx| ws.step_selection(-1, window, cx)),
             )
@@ -451,7 +486,8 @@ impl Render for Workspace {
                 cx.listener(|ws, _: &StashAll, _, cx| ws.model.update(cx, |m, cx| m.stash_all(cx))),
             )
             .on_action(cx.listener(|ws, _: &Refresh, _, cx| {
-                ws.model.update(cx, |m, cx| m.request_refresh(cx))
+                ws.model.update(cx, |m, cx| m.request_refresh(cx));
+                ws.pulls.update(cx, |m, cx| m.refresh(cx));
             }))
             .on_action(cx.listener(|ws, _: &OpenInEditor, _, cx| {
                 ws.model.update(cx, |m, cx| m.open_in_editor(cx))
