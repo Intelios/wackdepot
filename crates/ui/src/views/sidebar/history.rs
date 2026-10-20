@@ -1,5 +1,5 @@
 //! History: commits newest-first with compact graph lanes, unpushed marks,
-//! and a context menu for revert, cherry-pick, branch, tag and copy.
+//! and a context menu for revert, cherry-pick, reset, branch, tag and copy.
 
 use gpui::{
     AnyElement, App, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent, ParentElement,
@@ -10,7 +10,7 @@ use super::graph::{gutter_width, paint_row};
 use super::{ContextTarget, SelectNext, SelectPrev, SidebarView};
 use crate::components::menu::{Popover, menu_row, menu_separator};
 use crate::components::misc::empty_state;
-use crate::model::Selection;
+use crate::model::{ConfirmAction, Selection};
 use crate::theme::ActiveTheme;
 use crate::views::dialogs::NameKind;
 use crate::views::time::short_age;
@@ -226,23 +226,44 @@ impl SidebarView {
             .find(|c| c.sha == sha)
             .map(|c| c.short.clone())
             .unwrap_or_else(|| sha[..7.min(sha.len())].to_string());
-        let (m1, m2) = (self.model.clone(), self.model.clone());
-        let (o1, o2) = (self.overlays.clone(), self.overlays.clone());
-        let (s1, s2, s3, s4, s5) = (
+        let (m1, m2, m3) = (self.model.clone(), self.model.clone(), self.model.clone());
+        let (o1, o2, o3) = (
+            self.overlays.clone(),
+            self.overlays.clone(),
+            self.overlays.clone(),
+        );
+        let (s1, s2, s3, s4, s5, s6) = (
+            sha.clone(),
             sha.clone(),
             sha.clone(),
             sha.clone(),
             sha.clone(),
             sha.clone(),
         );
-        let (sh1, sh2) = (short.clone(), short.clone());
-        let (c1, c2, c3, c4, c5) = (
+        let (sh1, sh2, sh3) = (short.clone(), short.clone(), short.clone());
+        let (c1, c2, c3, c4, c5, c6) = (
+            close.clone(),
             close.clone(),
             close.clone(),
             close.clone(),
             close.clone(),
             close.clone(),
         );
+        // Desktop's rule: you may reset to any commit below the tip as long
+        // as everything being rewound is still unpushed — pushed commits
+        // are never orphaned. (Desktop counts `localCommitSHAs`; the prefix
+        // check is the same when unpushed commits sit on top, and never
+        // lets a pushed one slip through if merges interleave the log.)
+        let index = snap.log.iter().position(|c| c.sha == sha);
+        let resets_pushed = index.is_some_and(|i| {
+            snap.log[..i]
+                .iter()
+                .any(|c| !snap.unpushed.contains(&c.sha))
+        });
+        let op_running = snap.status.as_ref().is_some_and(|s| s.operation.is_some());
+        let resettable = index.is_some_and(|i| i > 0) && !resets_pushed && !op_running;
+        let dirty = snap.changed_count() > 0;
+        let commits_gone = index.unwrap_or(0);
         pop.child(
             menu_row("ctx-copy-sha", "Copy SHA")
                 .icon("copy")
@@ -304,11 +325,35 @@ impl SidebarView {
                     c5(cx);
                 }),
         )
-        .child(
-            menu_row("ctx-reset", "Reset branch to here")
-                .icon("rebase")
-                .hint("soon")
-                .disabled(true),
-        )
+        .child({
+            let mut row = menu_row("ctx-reset", "Reset branch to here…").icon("rebase");
+            if resettable {
+                row = row
+                    .hint(format!(
+                        "{commits_gone} commit{}",
+                        if commits_gone == 1 { "" } else { "s" }
+                    ))
+                    .on_click(move |_, _, cx| {
+                        if dirty {
+                            o3.update(cx, |o, cx| {
+                                o.confirm(
+                                    ConfirmAction::ResetToCommit {
+                                        sha: s6.clone(),
+                                        short: sh3.clone(),
+                                    },
+                                    None,
+                                    cx,
+                                )
+                            });
+                        } else {
+                            m3.update(cx, |m, cx| m.reset_to(s6.clone(), sh3.clone(), cx));
+                        }
+                        c6(cx);
+                    });
+            } else {
+                row = row.disabled(true);
+            }
+            row
+        })
     }
 }

@@ -127,6 +127,31 @@ pub fn unpushed_shas(repo: &Path) -> Result<HashSet<String>, String> {
     Ok(out.stdout.lines().map(str::to_string).collect())
 }
 
+/// Which parts `git reset` moves, matching its flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetMode {
+    /// Move the branch only — the undone commits' changes stay staged.
+    Soft,
+    /// Move the branch and unstage — the work stays on disk as plain
+    /// changes. Plain `git reset`'s default.
+    Mixed,
+    /// Move the branch, the index and the working tree: tracked changes
+    /// since the target are destroyed outright.
+    Hard,
+}
+
+/// `git reset --<mode> <to>` — rewind the current branch (or detached
+/// HEAD) to `to`, a SHA or any ref.
+pub fn reset(repo: &Path, mode: ResetMode, to: &str) -> Result<(), String> {
+    let flag = match mode {
+        ResetMode::Soft => "--soft",
+        ResetMode::Mixed => "--mixed",
+        ResetMode::Hard => "--hard",
+    };
+    Git::new(repo).run(["reset", flag, to])?;
+    Ok(())
+}
+
 /// How a revert or cherry-pick ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickOutcome {
@@ -218,8 +243,7 @@ pub fn undo_last_commit(repo: &Path) -> Result<(), String> {
     if !tip_is_unpushed(repo)? {
         return Err("Couldn't undo — that commit was already pushed.".into());
     }
-    Git::new(repo).run(["reset", "--soft", "HEAD~1"])?;
-    Ok(())
+    reset(repo, ResetMode::Soft, "HEAD~1")
 }
 
 /// Newest-first history, `limit` entries max. An unborn branch (no commits
@@ -353,6 +377,72 @@ mod tests {
                 .unwrap()
                 .status
                 != 0
+        );
+    }
+
+    #[test]
+    fn reset_mixed_keeps_work_unstaged() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "a.txt", "1\n");
+        stage_all(dir.path()).unwrap();
+        let one = commit_with(dir.path(), "one", "", &CommitOptions::default()).unwrap();
+        write_file(dir.path(), "b.txt", "2\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "two", "").unwrap();
+
+        reset(dir.path(), ResetMode::Mixed, &one).unwrap();
+
+        // The branch moved; the later work stays as plain changes.
+        let head = g
+            .run(["rev-parse", "HEAD"])
+            .unwrap()
+            .stdout
+            .trim()
+            .to_string();
+        assert_eq!(head, one);
+        assert!(dir.path().join("b.txt").exists());
+        let s = status(dir.path()).unwrap();
+        assert_eq!(
+            s.untracked
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b.txt"]
+        );
+        assert!(s.staged.is_empty());
+
+        // To an unknown ref git's own words come back.
+        assert!(reset(dir.path(), ResetMode::Mixed, "nosuchref").is_err());
+    }
+
+    #[test]
+    fn reset_hard_wipes_later_work() {
+        let (dir, _g) = temp_repo();
+        write_file(dir.path(), "a.txt", "1\n");
+        stage_all(dir.path()).unwrap();
+        let one = commit_with(dir.path(), "one", "", &CommitOptions::default()).unwrap();
+        write_file(dir.path(), "a.txt", "2\n");
+        write_file(dir.path(), "b.txt", "2\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "two", "").unwrap();
+        // Untracked files were never the branch's — hard reset leaves them.
+        write_file(dir.path(), "loose.txt", "x\n");
+
+        reset(dir.path(), ResetMode::Hard, &one).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "1\n"
+        );
+        assert!(!dir.path().join("b.txt").exists());
+        assert!(dir.path().join("loose.txt").exists());
+        let s = status(dir.path()).unwrap();
+        assert_eq!(
+            s.untracked
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["loose.txt"]
         );
     }
 

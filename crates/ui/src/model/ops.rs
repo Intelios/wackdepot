@@ -13,7 +13,7 @@ use wackdepot_core::stash::StashAction;
 use wackdepot_core::status::Operation;
 use wackdepot_core::{branch, commit, merge, stage, stash, status, sync};
 
-use super::{Beat, Bucket, BusyOp, ConfirmAction, Done, NoticeKind, RepoModel};
+use super::{Beat, Bucket, BusyOp, ConfirmAction, Done, NoticeKind, RepoModel, Tab};
 
 fn sink_progress(
     sink: &super::ProgressSink,
@@ -195,6 +195,27 @@ impl RepoModel {
                 PickOutcome::Conflicts => Ok(Done::toast(
                     "The cherry-pick hit conflicts. Resolve them, then continue.",
                 )),
+            },
+            cx,
+        );
+    }
+
+    /// `git reset --mixed <sha>` — rewind the branch to a commit, leaving
+    /// everything since as plain changes. Always mixed: unpushed work is
+    /// never deleted, it just moves to Changes — the same rule GitHub
+    /// Desktop's "Reset to Commit…" follows. History's menu only offers
+    /// this where every commit being undone is still unpushed.
+    pub fn reset_to(&mut self, sha: String, short: String, cx: &mut Context<Self>) {
+        // The Changes tab is where the rewound work lands — bring the user
+        // there so the reset isn't invisible (Desktop does the same).
+        self.set_tab(Tab::Changes, cx);
+        self.run(
+            BusyOp::Other("Resetting"),
+            move |r, _| {
+                commit::reset(r, commit::ResetMode::Mixed, &sha)?;
+                Ok(Done::toast(format!(
+                    "Reset to {short} — the rewound commits are unstaged in Changes."
+                )))
             },
             cx,
         );
@@ -502,6 +523,7 @@ impl RepoModel {
             ConfirmAction::ResolveConflict { path, side, delete } => {
                 self.resolve_conflict(path, side, delete, cx);
             }
+            ConfirmAction::ResetToCommit { sha, short } => self.reset_to(sha, short, cx),
             ConfirmAction::UndoCommit => self.run(
                 BusyOp::Other("Undoing commit"),
                 |r, _| {

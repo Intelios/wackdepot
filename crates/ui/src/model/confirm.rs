@@ -44,6 +44,12 @@ pub enum ConfirmAction {
         delete: bool,
     },
     UndoCommit,
+    /// `git reset --mixed` back to a commit — the dirty-worktree warning
+    /// that asks before running it.
+    ResetToCommit {
+        sha: String,
+        short: String,
+    },
 }
 
 impl ConfirmAction {
@@ -68,6 +74,7 @@ impl ConfirmAction {
                 }
             }
             Self::UndoCommit => "Undo the last commit?".into(),
+            Self::ResetToCommit { short, .. } => format!("Reset branch to {short}?"),
         }
     }
 
@@ -94,6 +101,9 @@ impl ConfirmAction {
                 }
             ),
             Self::UndoCommit => "The commit is removed and its changes go back to Staged, ready to commit again.".into(),
+            Self::ResetToCommit { .. } => {
+                "You have changes in progress. The reset keeps them, but they'll be mixed in with the rewound commits' changes in the Changes list.".into()
+            }
         }
     }
 
@@ -115,6 +125,7 @@ impl ConfirmAction {
             } => "Use ours",
             Self::ResolveConflict { .. } => "Use theirs",
             Self::UndoCommit => "Undo commit",
+            Self::ResetToCommit { .. } => "Reset",
         }
     }
 }
