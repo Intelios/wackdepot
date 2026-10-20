@@ -23,41 +23,72 @@ pub type Ranges = Vec<Range<usize>>;
 
 /// Word ranges for every line of `hunk`, index-aligned with `hunk.lines`.
 /// `None` for context lines and for changed lines that have no pair or
-/// whose pair is too different.
+/// whose pair is too different. Inside a conflicted file, `Ours` runs pair
+/// with the `Theirs` run that follows the `=======` marker instead.
 pub fn hunk_word_ranges(hunk: &Hunk) -> Vec<Option<Ranges>> {
     let lines = &hunk.lines;
     let mut out = vec![None; lines.len()];
     let mut i = 0;
     while i < lines.len() {
-        if lines[i].kind != DiffLineKind::Removed {
-            i += 1;
-            continue;
-        }
-        let del_start = i;
-        while i < lines.len() && lines[i].kind == DiffLineKind::Removed {
-            i += 1;
-        }
-        // A "\ No newline" marker may sit between the runs.
-        let mut add_start = i;
-        while add_start < lines.len() && lines[add_start].kind == DiffLineKind::NoNewline {
-            add_start += 1;
-        }
-        let mut j = add_start;
-        while j < lines.len() && lines[j].kind == DiffLineKind::Added {
-            j += 1;
-        }
-        let dels = i - del_start;
-        let adds = j - add_start;
-        if dels == adds {
-            for k in 0..dels {
-                let (old, new) = (del_start + k, add_start + k);
-                if let Some((a, b)) = intraline(&lines[old].text, &lines[new].text) {
-                    out[old] = Some(a);
-                    out[new] = Some(b);
+        match lines[i].kind {
+            DiffLineKind::Removed => {
+                let del_start = i;
+                while i < lines.len() && lines[i].kind == DiffLineKind::Removed {
+                    i += 1;
                 }
+                // A "\ No newline" marker may sit between the runs.
+                let mut add_start = i;
+                while add_start < lines.len() && lines[add_start].kind == DiffLineKind::NoNewline {
+                    add_start += 1;
+                }
+                let mut j = add_start;
+                while j < lines.len() && lines[j].kind == DiffLineKind::Added {
+                    j += 1;
+                }
+                let dels = i - del_start;
+                let adds = j - add_start;
+                if dels == adds {
+                    for k in 0..dels {
+                        let (old, new) = (del_start + k, add_start + k);
+                        if let Some((a, b)) = intraline(&lines[old].text, &lines[new].text) {
+                            out[old] = Some(a);
+                            out[new] = Some(b);
+                        }
+                    }
+                }
+                i = j.max(i);
             }
+            DiffLineKind::Ours => {
+                let our_start = i;
+                while i < lines.len() && lines[i].kind == DiffLineKind::Ours {
+                    i += 1;
+                }
+                // Skip the `=======` marker (and any diff3 `|||||||` base
+                // block) to land on the theirs section.
+                let mut j = i;
+                while j < lines.len()
+                    && matches!(lines[j].kind, DiffLineKind::Marker | DiffLineKind::Base)
+                {
+                    j += 1;
+                }
+                let mut k = j;
+                while k < lines.len() && lines[k].kind == DiffLineKind::Theirs {
+                    k += 1;
+                }
+                let (ours, theirs) = (i - our_start, k - j);
+                if ours == theirs {
+                    for n in 0..ours {
+                        let (a_idx, b_idx) = (our_start + n, j + n);
+                        if let Some((a, b)) = intraline(&lines[a_idx].text, &lines[b_idx].text) {
+                            out[a_idx] = Some(a);
+                            out[b_idx] = Some(b);
+                        }
+                    }
+                }
+                i = k.max(i);
+            }
+            _ => i += 1,
         }
-        i = j.max(i);
     }
     out
 }

@@ -1,6 +1,7 @@
 //! Unified-diff engine: parsing git's patch output into [`FileDiff`]s,
 //! per-file diffs for the changes list, synthesized whole-file diffs for
-//! untracked files, and per-commit diffs.
+//! untracked files, worktree-with-markers diffs for conflicted files, and
+//! per-commit diffs.
 //!
 //! [`FileDiff::header_text`] and [`Hunk::patch_text`] preserve the raw patch
 //! bytes so [`crate::stage`] can rebuild a `git apply`-able patch for any
@@ -35,6 +36,9 @@ pub enum DiffFileStatus {
     Renamed,
     /// A binary file (or one too large to treat as text); `hunks` is empty.
     Binary,
+    /// An unmerged path: hunks show the worktree file with its conflict
+    /// markers — not an applyable patch.
+    Conflicted,
 }
 
 /// One line inside a hunk.
@@ -45,6 +49,15 @@ pub enum DiffLineKind {
     Removed,
     /// The `\ No newline at end of file` marker.
     NoNewline,
+    /// A `<<<<<<<`/`=======`/`>>>>>>>` (or diff3 `|||||||`) marker line in a
+    /// conflicted file.
+    Marker,
+    /// Lines inside a conflict's `<<<<<<<` section (ours).
+    Ours,
+    /// Lines inside a diff3 `|||||||` section (the merge base).
+    Base,
+    /// Lines after `=======` up to `>>>>>>>` (theirs).
+    Theirs,
 }
 
 /// A single diff line with its gutter coordinates.
@@ -88,6 +101,24 @@ pub struct FileDiff {
     pub hunks: Vec<Hunk>,
     /// Binary or too-large file — there are no hunks to show or apply.
     pub is_binary: bool,
+    /// Merge-conflict details; `Some` iff `status` is `Conflicted`.
+    pub conflict: Option<ConflictInfo>,
+}
+
+/// What a conflicted file looks like beyond its lines — which stages exist
+/// and how many marker regions the worktree copy carries.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConflictInfo {
+    /// An `ours` stage exists in the index (`:2:path`) — false when our side
+    /// deleted the file.
+    pub ours: bool,
+    /// A `theirs` stage exists (`:3:path`) — false when their side deleted it.
+    pub theirs: bool,
+    /// `<<<<<<<`/`>>>>>>>` regions found in the worktree copy. Zero means the
+    /// markers were already edited out — or the sides can't have any.
+    pub regions: usize,
+    /// The file exists in the worktree — false when it's deleted there.
+    pub in_worktree: bool,
 }
 
 impl FileDiff {
@@ -109,6 +140,7 @@ impl FileDiff {
             header_text: String::new(),
             hunks: Vec::new(),
             is_binary: true,
+            conflict: None,
         }
     }
 }
@@ -162,6 +194,13 @@ pub fn diff_with(
         return Ok(d);
     }
 
+    // An unmerged path produces no two-way patch (`git diff` emits a
+    // combined `diff --cc`, or nothing at all). Show the worktree file with
+    // its conflict markers instead of an empty diff.
+    if let Some((ours, theirs)) = unmerged_sides(&g, file) {
+        return conflicted_diff(repo, file, ours, theirs);
+    }
+
     // Empty patch: either no changes on this side, or the file isn't tracked
     // yet (git diff ignores untracked files) — synthesize the addition.
     if !is_tracked(repo, file) {
@@ -178,7 +217,201 @@ pub fn diff_with(
         header_text: String::new(),
         hunks: Vec::new(),
         is_binary: false,
+        conflict: None,
     })
+}
+
+/// `git ls-files -u -- <file>` → `Some((ours, theirs))` stage presence when
+/// the path is unmerged. A file deleted on both sides has stage 1 only.
+fn unmerged_sides(g: &Git, file: &str) -> Option<(bool, bool)> {
+    let out = g.try_run(["ls-files", "-u", "--", file]).ok()?;
+    if !out.ok() || out.stdout.trim().is_empty() {
+        return None;
+    }
+    // Lines look like "<mode> <sha> <stage>\t<path>".
+    let has = |stage: &str| {
+        out.stdout.lines().any(|l| {
+            l.split_once('\t')
+                .is_some_and(|(head, _)| head.ends_with(stage))
+        })
+    };
+    Some((has(" 2"), has(" 3")))
+}
+
+/// Context lines kept on either side of a conflict region.
+const CONFLICT_CONTEXT: usize = 3;
+
+/// The diff view of a conflicted file: the worktree copy with its conflict
+/// sections classified (`<<<<<<<`/`=======`/`>>>>>>>`, diff3's `|||||||`
+/// included). Hunks group the regions with a few lines of context each, or
+/// the whole file when there are no markers. These hunks are a view, not a
+/// patch — `header_text`/`patch_text` stay empty and nothing can apply them.
+fn conflicted_diff(repo: &Path, file: &str, ours: bool, theirs: bool) -> Result<FileDiff, String> {
+    let path = repo.join(file);
+    let bytes = fs::read(&path).unwrap_or_default();
+    let too_big = fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_TEXT_BYTES;
+    let mut info = ConflictInfo {
+        ours,
+        theirs,
+        regions: 0,
+        in_worktree: path.exists(),
+    };
+    if too_big || bytes.iter().take(8192).any(|&b| b == 0) {
+        let mut d = FileDiff::stub(file, DiffFileStatus::Conflicted);
+        d.new_path = Some(file.to_string());
+        d.conflict = Some(info);
+        return Ok(d);
+    }
+
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    let (regions, kinds) = classify_conflicts(&lines);
+    info.regions = regions.len();
+
+    let mut hunks = Vec::new();
+    if regions.is_empty() {
+        // No markers left (already edited, or a side can't conflict) — show
+        // the whole file as it stands.
+        if !lines.is_empty() {
+            hunks.push(conflict_hunk(0, &lines, &kinds, "the file as it stands"));
+        }
+    } else {
+        // Merge regions closer than twice the context into one hunk.
+        let last = lines.len() - 1;
+        let mut span = (
+            regions[0].0.saturating_sub(CONFLICT_CONTEXT),
+            (regions[0].1 + CONFLICT_CONTEXT).min(last),
+        );
+        for r in regions.iter().skip(1) {
+            if r.0.saturating_sub(CONFLICT_CONTEXT) <= span.1 + 1 {
+                span.1 = (r.1 + CONFLICT_CONTEXT).min(last);
+            } else {
+                hunks.push(conflict_hunk(
+                    span.0,
+                    &lines[span.0..=span.1],
+                    &kinds[span.0..=span.1],
+                    "conflict",
+                ));
+                span = (
+                    r.0.saturating_sub(CONFLICT_CONTEXT),
+                    (r.1 + CONFLICT_CONTEXT).min(last),
+                );
+            }
+        }
+        hunks.push(conflict_hunk(
+            span.0,
+            &lines[span.0..=span.1],
+            &kinds[span.0..=span.1],
+            "conflict",
+        ));
+    }
+
+    Ok(FileDiff {
+        old_path: Some(file.to_string()),
+        new_path: Some(file.to_string()),
+        status: DiffFileStatus::Conflicted,
+        header_text: String::new(),
+        hunks,
+        is_binary: false,
+        conflict: Some(info),
+    })
+}
+
+/// A hunk over `lines[start..]` — worktree lines only, so line numbers live
+/// on the new side. The header names the sides when marker labels allow
+/// (`@@ +4,9 @@ HEAD vs side`), else `tail` is the trailing context.
+fn conflict_hunk(start: usize, lines: &[&str], kinds: &[DiffLineKind], tail: &str) -> Hunk {
+    let mut ours = None;
+    let mut theirs = None;
+    for (text, kind) in lines.iter().zip(kinds) {
+        if *kind != DiffLineKind::Marker {
+            continue;
+        }
+        if ours.is_none() {
+            ours = conflict_marker(text, b'<');
+        }
+        if theirs.is_none() {
+            theirs = conflict_marker(text, b'>');
+        }
+    }
+    let tail = match (ours, theirs) {
+        (Some(o), Some(t)) if !o.is_empty() && !t.is_empty() => {
+            format!("{} vs {}", o.replace('@', " "), t.replace('@', " "))
+        }
+        _ => tail.to_string(),
+    };
+    let mut h = Hunk {
+        header: format!("@@ +{},{} @@ {}", start + 1, lines.len(), tail),
+        old_start: 0,
+        old_lines: 0,
+        new_start: start as u32 + 1,
+        new_lines: lines.len() as u32,
+        lines: Vec::with_capacity(lines.len()),
+        patch_text: String::new(),
+    };
+    for (i, (text, kind)) in lines.iter().zip(kinds).enumerate() {
+        h.lines.push(DiffLine {
+            kind: *kind,
+            text: (*text).to_string(),
+            old_lineno: None,
+            new_lineno: Some(start as u32 + i as u32 + 1),
+        });
+    }
+    h
+}
+
+/// `(kind, label)` when `line` opens/closes/marks a conflict section.
+/// Markers need at least seven of their character then end of line or a
+/// space + label — anything shorter is just text.
+fn conflict_marker(line: &str, ch: u8) -> Option<&str> {
+    let b = line.as_bytes();
+    if b.len() < 7 || b[..7].iter().any(|&c| c != ch) {
+        return None;
+    }
+    match b.get(7) {
+        None => Some(""),
+        Some(&b' ') => Some(line[8..].trim()),
+        _ => None,
+    }
+}
+
+/// The `<<<<<<<`…`>>>>>>>` regions (line indices) plus a per-line kind for
+/// the whole file. Unterminated markers run to EOF; nested or stray markers
+/// degrade to whatever section they're sitting in.
+fn classify_conflicts(lines: &[&str]) -> (Vec<(usize, usize)>, Vec<DiffLineKind>) {
+    let mut regions = Vec::new();
+    let mut kinds = vec![DiffLineKind::Context; lines.len()];
+    let mut state = DiffLineKind::Context;
+    let mut open = 0usize;
+    for (i, line) in lines.iter().enumerate() {
+        if state == DiffLineKind::Context {
+            if conflict_marker(line, b'<').is_some() {
+                state = DiffLineKind::Ours;
+                kinds[i] = DiffLineKind::Marker;
+                open = i;
+                continue;
+            }
+        } else if conflict_marker(line, b'>').is_some() {
+            kinds[i] = DiffLineKind::Marker;
+            regions.push((open, i));
+            state = DiffLineKind::Context;
+            continue;
+        } else if conflict_marker(line, b'|').is_some() {
+            state = DiffLineKind::Base;
+            kinds[i] = DiffLineKind::Marker;
+            continue;
+        } else if conflict_marker(line, b'=').is_some() {
+            state = DiffLineKind::Theirs;
+            kinds[i] = DiffLineKind::Marker;
+            continue;
+        }
+        kinds[i] = state;
+    }
+    // A `<<<<<<<` never closed still counts as a region.
+    if state != DiffLineKind::Context {
+        regions.push((open, lines.len() - 1));
+    }
+    (regions, kinds)
 }
 
 /// Whether `file` is in the index (tracked — even if deleted in the worktree).
@@ -249,6 +482,7 @@ pub fn parse_diff(text: &str) -> Vec<FileDiff> {
                 header_text: format!("{line}\n"),
                 hunks: Vec::new(),
                 is_binary: false,
+                conflict: None,
             });
             binary_body = false;
             continue;
@@ -574,6 +808,9 @@ fn push_line(h: &mut Hunk, kind: DiffLineKind, text: &str) {
             None,
         ),
         DiffLineKind::NoNewline => (None, None),
+        // Conflict lines only exist on synthesized conflicted diffs, where
+        // line numbers are assigned directly — these arms are never hit.
+        _ => (None, None),
     };
     h.lines.push(DiffLine {
         kind,
@@ -726,7 +963,7 @@ mod tests {
     use super::*;
     use crate::commit::commit;
     use crate::stage::{stage_all, stage_file, stage_hunk};
-    use crate::testutil::{temp_repo, write_file};
+    use crate::testutil::{git_out, temp_repo, write_file};
 
     const SAMPLE: &str = "\
 diff --git a/src/a.rs b/src/a.rs
@@ -945,6 +1182,189 @@ Binary files a/pic.png and b/pic.png differ
         };
         let quiet = diff_with(dir.path(), "f.txt", DiffSide::Unstaged, &ws).unwrap();
         assert!(quiet.hunks.is_empty());
+    }
+
+    /// A repo left mid-merge with `f.txt` conflicted (diverging edits on
+    /// main and a `side` branch).
+    fn conflicted_repo() -> (tempfile::TempDir, Git) {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "f.txt", "top\nmiddle\nbottom\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "base", "").unwrap();
+        g.run(["checkout", "-b", "side"]).unwrap();
+        write_file(dir.path(), "f.txt", "top\nSIDE\nbottom\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "side", "").unwrap();
+        g.run(["checkout", "main"]).unwrap();
+        write_file(dir.path(), "f.txt", "top\nMAIN\nbottom\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "main", "").unwrap();
+        assert!(git_out(&g, ["merge", "side"]).status != 0);
+        (dir, g)
+    }
+
+    #[test]
+    fn conflicted_file_shows_markers() {
+        let (dir, _g) = conflicted_repo();
+        let d = diff(dir.path(), "f.txt", DiffSide::Unstaged).unwrap();
+        assert_eq!(d.status, DiffFileStatus::Conflicted);
+        assert!(!d.is_binary);
+        let info = d.conflict.as_ref().unwrap();
+        assert!(info.ours && info.theirs && info.in_worktree);
+        assert_eq!(info.regions, 1);
+        assert_eq!(d.hunks.len(), 1);
+        let h = &d.hunks[0];
+        assert_eq!(h.header, "@@ +1,7 @@ HEAD vs side");
+        let kinds: Vec<DiffLineKind> = h.lines.iter().map(|l| l.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                DiffLineKind::Context,
+                DiffLineKind::Marker,
+                DiffLineKind::Ours,
+                DiffLineKind::Marker,
+                DiffLineKind::Theirs,
+                DiffLineKind::Marker,
+                DiffLineKind::Context,
+            ]
+        );
+        // Line numbers sit on the new side — the worktree file.
+        assert_eq!(h.lines[2].new_lineno, Some(3));
+        assert_eq!(h.lines[2].old_lineno, None);
+        assert_eq!(h.lines[4].text, "SIDE");
+    }
+
+    #[test]
+    fn conflicted_diff3_shows_the_base() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "f.txt", "x\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "base", "").unwrap();
+        g.run(["checkout", "-b", "side"]).unwrap();
+        write_file(dir.path(), "f.txt", "theirs\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "side", "").unwrap();
+        g.run(["checkout", "main"]).unwrap();
+        write_file(dir.path(), "f.txt", "ours\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "main", "").unwrap();
+        assert!(git_out(&g, ["-c", "merge.conflictStyle=diff3", "merge", "side"]).status != 0);
+
+        let d = diff(dir.path(), "f.txt", DiffSide::Unstaged).unwrap();
+        let kinds: Vec<DiffLineKind> = d.hunks[0].lines.iter().map(|l| l.kind).collect();
+        assert!(kinds.contains(&DiffLineKind::Base));
+        // 7 lines: <<<<<<< ours ||||||| base ======= theirs >>>>>>>
+        assert_eq!(kinds.len(), 7);
+    }
+
+    #[test]
+    fn conflicted_file_with_no_markers_still_shows() {
+        let (dir, _g) = conflicted_repo();
+        // The user edited the markers out — still unmerged until staged.
+        write_file(dir.path(), "f.txt", "top\nresolved\nbottom\n");
+        let d = diff(dir.path(), "f.txt", DiffSide::Unstaged).unwrap();
+        assert_eq!(d.status, DiffFileStatus::Conflicted);
+        assert_eq!(d.conflict.as_ref().unwrap().regions, 0);
+        assert_eq!(d.hunks.len(), 1);
+        assert!(
+            d.hunks[0]
+                .lines
+                .iter()
+                .all(|l| l.kind == DiffLineKind::Context)
+        );
+        assert!(d.hunks[0].lines.iter().any(|l| l.text == "resolved"));
+    }
+
+    #[test]
+    fn modify_delete_conflict_isnt_silent() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "f.txt", "keep me\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "base", "").unwrap();
+        g.run(["checkout", "-b", "side"]).unwrap();
+        g.run(["rm", "-q", "f.txt"]).unwrap();
+        commit(dir.path(), "delete", "").unwrap();
+        g.run(["checkout", "main"]).unwrap();
+        write_file(dir.path(), "f.txt", "changed\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "modify", "").unwrap();
+        assert!(git_out(&g, ["merge", "side"]).status != 0);
+
+        let d = diff(dir.path(), "f.txt", DiffSide::Unstaged).unwrap();
+        assert_eq!(d.status, DiffFileStatus::Conflicted);
+        let info = d.conflict.as_ref().unwrap();
+        assert!(info.ours && !info.theirs);
+        // No markers are possible — the file shows whole as context.
+        assert_eq!(info.regions, 0);
+        assert!(d.hunks[0].lines.iter().any(|l| l.text == "changed"));
+    }
+
+    #[test]
+    fn binary_conflict_is_a_conflict_not_a_mystery() {
+        let (dir, g) = temp_repo();
+        std::fs::write(dir.path().join("b.bin"), [0u8, 1, 2]).unwrap();
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "base", "").unwrap();
+        g.run(["checkout", "-b", "side"]).unwrap();
+        std::fs::write(dir.path().join("b.bin"), [0u8, 9, 9]).unwrap();
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "side", "").unwrap();
+        g.run(["checkout", "main"]).unwrap();
+        std::fs::write(dir.path().join("b.bin"), [3u8, 4, 0, 5]).unwrap();
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "main", "").unwrap();
+        assert!(git_out(&g, ["merge", "side"]).status != 0);
+
+        let d = diff(dir.path(), "b.bin", DiffSide::Unstaged).unwrap();
+        assert_eq!(d.status, DiffFileStatus::Conflicted);
+        assert!(d.is_binary);
+        assert!(d.hunks.is_empty());
+        assert!(d.conflict.is_some());
+    }
+
+    #[test]
+    fn resolved_conflict_diffs_normally() {
+        let (dir, g) = conflicted_repo();
+        write_file(dir.path(), "f.txt", "top\nresolved\nbottom\n");
+        g.run(["add", "f.txt"]).unwrap();
+        // Resolved → it leaves the Conflicted bucket and diffs staged
+        // against the merge heads like a normal staged file.
+        let d = diff(dir.path(), "f.txt", DiffSide::Staged).unwrap();
+        assert_eq!(d.status, DiffFileStatus::Modified);
+        assert_eq!(d.conflict, None);
+        assert!(!d.hunks.is_empty());
+    }
+
+    #[test]
+    fn classify_conflicts_handles_zdiff3_and_strays() {
+        let lines: Vec<&str> = vec![
+            "pre",
+            "<<<<<<< HEAD",
+            "ours",
+            "||||||| base",
+            "was",
+            "=======",
+            "theirs",
+            ">>>>>>> side",
+            "post",
+        ];
+        let (regions, kinds) = classify_conflicts(&lines);
+        assert_eq!(regions, vec![(1, 7)]);
+        assert_eq!(kinds[3], DiffLineKind::Marker);
+        assert_eq!(kinds[4], DiffLineKind::Base);
+        assert_eq!(kinds[6], DiffLineKind::Theirs);
+
+        // A `<<<<<<<` never closed runs to the end of the file.
+        let lines: Vec<&str> = vec!["a", "<<<<<<< HEAD", "ours"];
+        let (regions, kinds) = classify_conflicts(&lines);
+        assert_eq!(regions, vec![(1, 2)]);
+        assert_eq!(kinds[2], DiffLineKind::Ours);
+
+        // Fewer than seven chars or no separator isn't a marker.
+        let lines: Vec<&str> = vec!["<<<<<", "<<<<<<<nospace", "plain"];
+        let (regions, kinds) = classify_conflicts(&lines);
+        assert!(regions.is_empty());
+        assert!(kinds.iter().all(|k| *k == DiffLineKind::Context));
     }
 
     #[test]

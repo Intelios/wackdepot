@@ -201,6 +201,10 @@ pub fn build_partial_patch(file: &FileDiff, sel: &LineSel, dir: PatchDir) -> Opt
                     }
                     continue;
                 }
+                // Conflict lines never appear in a stageable diff (a
+                // conflicted file isn't hunk-staged) — keep the match
+                // exhaustive anyway.
+                _ => None,
             };
             if matches!(line.kind, DiffLineKind::Added | DiffLineKind::Removed) {
                 total_changes += 1;
@@ -772,6 +776,7 @@ mod tests {
                             }
                         }
                         DiffLineKind::NoNewline => {}
+                        _ => {}
                     }
                 }
             }

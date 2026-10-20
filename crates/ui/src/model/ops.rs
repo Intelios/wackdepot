@@ -2,7 +2,7 @@
 //! Destructive ones are only reached after a confirm (see
 //! [`RepoModel::perform`]).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::Context;
 use wackdepot_core::commit::{CommitOptions, PickOutcome};
@@ -477,6 +477,9 @@ impl RepoModel {
                 );
             }
             ConfirmAction::DropStash { sha, .. } => self.stash_action(sha, StashAction::Drop, cx),
+            ConfirmAction::MarkResolved { path } => {
+                self.toggle_stage(path, Bucket::Conflicted, cx);
+            }
             ConfirmAction::UndoCommit => self.run(
                 BusyOp::Other("Undoing commit"),
                 |r, _| {
@@ -596,6 +599,19 @@ impl RepoModel {
     /// The configured editor, else the first of WackCode, Zed, VS Code found.
     pub fn open_in_editor(&mut self, cx: &mut Context<Self>) {
         let Some(p) = self.repo.clone() else { return };
+        self.open_in_editor_app(&p, cx);
+    }
+
+    /// Open one file — where conflicts go to be resolved — instead of the
+    /// repo root.
+    pub fn open_file_in_editor(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.open_in_editor_app(&repo.join(path), cx);
+    }
+
+    fn open_in_editor_app(&mut self, path: &Path, cx: &mut Context<Self>) {
         let wanted = crate::app::prefs::get(cx).editor_app.clone();
         let app = [
             wanted,
@@ -624,7 +640,7 @@ impl RepoModel {
         if std::process::Command::new("open")
             .arg("-a")
             .arg(&app)
-            .arg(&p)
+            .arg(path)
             .spawn()
             .is_err()
         {

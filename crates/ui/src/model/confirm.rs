@@ -2,15 +2,38 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmAction {
-    DiscardFile { path: String },
-    TrashFile { path: String },
+    DiscardFile {
+        path: String,
+    },
+    TrashFile {
+        path: String,
+    },
     DiscardAll,
-    DiscardHunk { path: String, hunk: usize },
-    DiscardLines { path: String, count: usize },
-    DeleteBranch { name: String },
-    ForceDeleteBranch { name: String },
-    AbortOperation { what: &'static str },
-    DropStash { sha: String, label: String },
+    DiscardHunk {
+        path: String,
+        hunk: usize,
+    },
+    DiscardLines {
+        path: String,
+        count: usize,
+    },
+    DeleteBranch {
+        name: String,
+    },
+    ForceDeleteBranch {
+        name: String,
+    },
+    AbortOperation {
+        what: &'static str,
+    },
+    DropStash {
+        sha: String,
+        label: String,
+    },
+    /// `git add` a conflicted path while its markers are still inside.
+    MarkResolved {
+        path: String,
+    },
     UndoCommit,
 }
 
@@ -27,6 +50,7 @@ impl ConfirmAction {
             Self::ForceDeleteBranch { name } => format!("{name} isn't merged. Delete it anyway?"),
             Self::AbortOperation { what } => format!("Abort the {what}?"),
             Self::DropStash { .. } => "Drop this stash?".into(),
+            Self::MarkResolved { path } => format!("Mark {} resolved?", file_name(path)),
             Self::UndoCommit => "Undo the last commit?".into(),
         }
     }
@@ -42,6 +66,7 @@ impl ConfirmAction {
             Self::ForceDeleteBranch { .. } => "Its commits aren't on any other branch, so they'll only be recoverable from the reflog.".into(),
             Self::AbortOperation { .. } => "The repository goes back to how it was before it started. Resolved conflicts are lost.".into(),
             Self::DropStash { label, .. } => format!("“{label}” is deleted for good."),
+            Self::MarkResolved { .. } => "Its conflict markers are still inside — they'd be staged as-is and could end up committed.".into(),
             Self::UndoCommit => "The commit is removed and its changes go back to Staged, ready to commit again.".into(),
         }
     }
@@ -56,6 +81,7 @@ impl ConfirmAction {
             Self::DeleteBranch { .. } | Self::ForceDeleteBranch { .. } => "Delete",
             Self::AbortOperation { .. } => "Abort",
             Self::DropStash { .. } => "Drop",
+            Self::MarkResolved { .. } => "Mark resolved",
             Self::UndoCommit => "Undo commit",
         }
     }

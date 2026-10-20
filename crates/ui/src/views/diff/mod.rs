@@ -24,7 +24,7 @@ use crate::app::prefs;
 use crate::components::button::{Variant, button, icon_button};
 use crate::components::frost::frosted;
 use crate::components::mark::{accent_mark, status_mark};
-use crate::components::misc::empty_state;
+use crate::components::misc::{Tone, banner, empty_state};
 use crate::components::pill_track::pill_track;
 use crate::components::seam::seam;
 use crate::components::spinner::orbit;
@@ -446,10 +446,10 @@ impl DiffCard {
             .min_w_0()
             .overflow_hidden()
             .whitespace_nowrap()
-            .text_color(if l.kind == DiffLineKind::NoNewline {
-                t.text_faint
-            } else {
-                t.code_text
+            .text_color(match l.kind {
+                DiffLineKind::NoNewline => t.text_faint,
+                DiffLineKind::Marker => t.sem.warning,
+                _ => t.code_text,
             })
             .child(StyledText::new(shown).with_highlights(hl))
     }
@@ -615,10 +615,16 @@ impl DiffCard {
             None => (String::new(), path.clone()),
         };
         let note = match file.status {
-            DiffFileStatus::Added => Some("New file".to_string()),
-            DiffFileStatus::Deleted => Some("Deleted".to_string()),
-            DiffFileStatus::Renamed => file.old_path.as_ref().map(|o| format!("Renamed from {o}")),
-            DiffFileStatus::Binary => Some("Binary".to_string()),
+            DiffFileStatus::Added => Some(("New file".to_string(), t.pill(), t.text_soft)),
+            DiffFileStatus::Deleted => Some(("Deleted".to_string(), t.pill(), t.text_soft)),
+            DiffFileStatus::Renamed => file
+                .old_path
+                .as_ref()
+                .map(|o| (format!("Renamed from {o}"), t.pill(), t.text_soft)),
+            DiffFileStatus::Binary => Some(("Binary".to_string(), t.pill(), t.text_soft)),
+            DiffFileStatus::Conflicted => {
+                Some(("Conflicted".to_string(), t.sem.warning_bg, t.sem.warning))
+            }
             DiffFileStatus::Modified => None,
         };
         div()
@@ -628,7 +634,11 @@ impl DiffCard {
             .h(px(46.))
             .px(px(12.))
             .bg(t.surface)
-            .child(accent_mark("file-code"))
+            .child(accent_mark(if file.status == DiffFileStatus::Conflicted {
+                "conflict"
+            } else {
+                "file-code"
+            }))
             .child(
                 div()
                     .flex_1()
@@ -649,7 +659,7 @@ impl DiffCard {
                                     .child(div().text_color(t.text).child(name)),
                             ),
                     )
-                    .children(note.map(|n| {
+                    .children(note.map(|(n, bg, ink)| {
                         div()
                             .flex_none()
                             .px(px(8.))
@@ -657,9 +667,9 @@ impl DiffCard {
                             .flex()
                             .items_center()
                             .rounded_full()
-                            .bg(t.pill())
+                            .bg(bg)
                             .text_size(px(11.))
-                            .text_color(t.text_soft)
+                            .text_color(ink)
                             .child(n)
                     })),
             )
@@ -963,6 +973,9 @@ impl DiffCard {
                 .child(empty_state("commit", "This commit has no file changes"))
                 .into_any_element();
         };
+        if file.status == DiffFileStatus::Conflicted {
+            return self.conflicted_body(file, cx);
+        }
         if file.is_binary {
             return div()
                 .size_full()
@@ -999,6 +1012,134 @@ impl DiffCard {
                 })
                 .size_full(),
             )
+            .into_any_element()
+    }
+
+    /// A conflicted file: the worktree copy with its marker regions, led by
+    /// a warning banner with the two ways out — open it in an editor, or
+    /// call it resolved (which asks first when markers are still inside).
+    fn conflicted_body(&self, file: &FileDiff, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.theme().clone();
+        let info = file.conflict.clone().unwrap_or_default();
+        let (title, body) = if info.regions > 0 {
+            (
+                format!(
+                    "{} conflict{} in this file",
+                    info.regions,
+                    if info.regions == 1 { "" } else { "s" }
+                ),
+                "Pick what to keep between the markers, delete the markers, then mark the file resolved."
+                    .to_string(),
+            )
+        } else if !info.ours && !info.theirs {
+            (
+                "Deleted on both sides".to_string(),
+                "Both sides removed this file — confirm the deletion by marking it resolved."
+                    .to_string(),
+            )
+        } else if !info.theirs {
+            (
+                "Deleted on their side".to_string(),
+                "They removed this file while it changed on yours — keep it, or delete it, then mark it resolved."
+                    .to_string(),
+            )
+        } else if !info.ours {
+            (
+                "Deleted on your side".to_string(),
+                "This file is gone on your side but changed on theirs — restore it, or confirm the deletion."
+                    .to_string(),
+            )
+        } else if file.is_binary {
+            (
+                "Conflicted binary file".to_string(),
+                "Both sides changed a file with no text form — pick a version, then mark it resolved."
+                    .to_string(),
+            )
+        } else {
+            (
+                "No markers left".to_string(),
+                "The conflict markers are gone — if the file looks right, mark it resolved."
+                    .to_string(),
+            )
+        };
+
+        let path = file.path().to_string();
+        let m = self.model.clone();
+        let entity = cx.entity();
+        let open = button("conflict-open", "Open in Editor")
+            .small()
+            .on_click(move |_, _, cx| m.update(cx, |m, cx| m.open_file_in_editor(&path, cx)));
+        let path = file.path().to_string();
+        let overlays = self.overlays.clone();
+        let m = self.model.clone();
+        let resolve = button("conflict-resolve", "Mark resolved")
+            .small()
+            .lit(info.regions == 0)
+            .on_click(move |_, _, cx| {
+                if info.regions > 0 {
+                    // Markers are still inside — resolving now would commit
+                    // them, so ask first.
+                    overlays.update(cx, |o, cx| {
+                        o.confirm(ConfirmAction::MarkResolved { path: path.clone() }, None, cx)
+                    });
+                } else {
+                    m.update(cx, |m, cx| {
+                        m.toggle_stage(path.clone(), Bucket::Conflicted, cx)
+                    });
+                }
+            });
+        let strip = div().flex_none().p(px(10.)).child(
+            banner(Tone::Warning, title)
+                .body(body)
+                .action(open)
+                .action(resolve),
+        );
+
+        let content: AnyElement = if file.is_binary {
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    empty_state("file", "Binary file")
+                        .body("There's no text to show — resolve this one in an editor or Finder."),
+                )
+                .into_any_element()
+        } else if file.hunks.is_empty() {
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    empty_state("conflict", "Nothing to show").body(if !info.in_worktree {
+                        "The file is deleted in the worktree — there is no text to show."
+                    } else {
+                        "The file is empty."
+                    }),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .size_full()
+                .child(
+                    list(self.list.clone(), move |ix, _window, cx| {
+                        entity.update(cx, |d, cx| d.render_row(ix, cx))
+                    })
+                    .size_full(),
+                )
+                .into_any_element()
+        };
+
+        div()
+            .size_full()
+            .bg(t.well)
+            .flex()
+            .flex_col()
+            .child(strip)
+            .child(seam())
+            .child(div().flex_1().min_h_0().child(content))
             .into_any_element()
     }
 
@@ -1145,7 +1286,13 @@ impl Render for DiffCard {
                 );
             }
         }
-        if doc.ignore_whitespace && matches!(doc.kind, DocKind::Working { .. }) {
+        if doc.ignore_whitespace
+            && matches!(doc.kind, DocKind::Working { .. })
+            && doc
+                .file
+                .as_ref()
+                .is_some_and(|f| f.status != DiffFileStatus::Conflicted)
+        {
             card = card.child(
                 div()
                     .absolute()

@@ -107,7 +107,7 @@ impl PullDiff {
                 }
                 let patch=changed.patch.as_deref().unwrap_or_default();
                 let parsed=wackdepot_core::diff::parse_diff(&format!("diff --git a/file b/file\n--- a/file\n+++ b/file\n{patch}\n"));
-                let mut file=parsed.into_iter().next().unwrap_or(FileDiff {old_path:None,new_path:None,status:DiffFileStatus::Modified,header_text:String::new(),hunks:Vec::new(),is_binary:false});
+                let mut file=parsed.into_iter().next().unwrap_or(FileDiff {old_path:None,new_path:None,status:DiffFileStatus::Modified,header_text:String::new(),hunks:Vec::new(),is_binary:false,conflict:None});
                 file.old_path=if changed.status=="added"{None}else{Some(changed.previous_filename.clone().unwrap_or_else(||changed.filename.clone()))};
                 file.new_path=if changed.status=="removed"{None}else{Some(changed.filename.clone())};
                 file.status=match changed.status.as_str(){"added"=>DiffFileStatus::Added,"removed"=>DiffFileStatus::Deleted,"renamed"|"copied"=>DiffFileStatus::Renamed,_=>DiffFileStatus::Modified};

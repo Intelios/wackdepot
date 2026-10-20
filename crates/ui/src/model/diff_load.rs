@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use wackdepot_core::blob;
 use wackdepot_core::commit::LogEntry;
-use wackdepot_core::diff::{self, CommitFile, DiffOptions, FileDiff};
+use wackdepot_core::diff::{self, CommitFile, DiffFileStatus, DiffOptions, FileDiff};
 use wackdepot_core::words::{self, Ranges};
 use wackdepot_syntax::LineSpans;
 
@@ -32,10 +32,15 @@ pub struct DiffDoc {
 
 impl DiffDoc {
     /// Whether hunks and lines of this diff can be staged/discarded.
+    /// Conflicted diffs show the file's markers, not a patch — there's
+    /// nothing to apply, only "Mark resolved" on the whole file.
     pub fn stageable(&self) -> bool {
         matches!(self.kind, DocKind::Working { .. })
             && !self.ignore_whitespace
-            && self.file.as_ref().is_some_and(|f| !f.is_binary)
+            && self
+                .file
+                .as_ref()
+                .is_some_and(|f| !f.is_binary && f.status != DiffFileStatus::Conflicted)
     }
 
     /// Syntax spans for a diff line, from whichever side it lives on.
@@ -43,10 +48,13 @@ impl DiffDoc {
         use wackdepot_core::diff::DiffLineKind;
         let (hl, n) = match line.kind {
             DiffLineKind::Removed => (self.old_hl.as_ref()?, line.old_lineno?),
-            DiffLineKind::Added | DiffLineKind::Context => {
-                (self.new_hl.as_ref()?, line.new_lineno?)
-            }
-            DiffLineKind::NoNewline => return None,
+            // A conflicted diff's lines all carry worktree numbers.
+            DiffLineKind::Added
+            | DiffLineKind::Context
+            | DiffLineKind::Ours
+            | DiffLineKind::Base
+            | DiffLineKind::Theirs => (self.new_hl.as_ref()?, line.new_lineno?),
+            DiffLineKind::NoNewline | DiffLineKind::Marker => return None,
         };
         hl.get(n.checked_sub(1)? as usize)
     }
