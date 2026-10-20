@@ -11,6 +11,8 @@ use gpui::{
 use super::{
     ContextTarget, DiscardSelected, RowKey, SelectNext, SelectPrev, SidebarView, ToggleStage,
 };
+use wackdepot_core::stage::ConflictSide;
+
 use crate::components::button::icon_button;
 use crate::components::mark::status_mark;
 use crate::components::menu::{menu_row, menu_separator, popover};
@@ -405,7 +407,9 @@ impl SidebarView {
             .bg(t.elevated)
             .shadow(t.shadow_pop())
             .child(toggle);
-        if b != Bucket::Staged {
+        if b != Bucket::Staged && b != Bucket::Conflicted {
+            // A conflicted path can't be "discarded" (`git restore` refuses
+            // unmerged paths) — its outs are ours/theirs/resolve instead.
             let e = entity.clone();
             actions = actions.child(icon_button(("discard", i), "trash").small().on_click(
                 move |_, _, cx| {
@@ -556,7 +560,13 @@ impl SidebarView {
                     _ => "Stage",
                 };
                 let (m1, m2, m3) = (m.clone(), m.clone(), m.clone());
-                let (pa, pb, pc, pd) = (path.clone(), path.clone(), path.clone(), path.clone());
+                let (pa, pb, pc, pd, pe) = (
+                    path.clone(),
+                    path.clone(),
+                    path.clone(),
+                    path.clone(),
+                    path.clone(),
+                );
                 let (c1, c2, c3, c4, c5) = (
                     close.clone(),
                     close.clone(),
@@ -577,7 +587,63 @@ impl SidebarView {
                             c1(cx);
                         }),
                 );
-                if bucket != Bucket::Staged {
+                if bucket == Bucket::Conflicted {
+                    // The wholesale outs for an unmerged path. Porcelain's
+                    // XY tells which side deleted it — resolving that way
+                    // is `git rm`, not a checkout.
+                    let change = self
+                        .model
+                        .read(cx)
+                        .snap
+                        .bucket(Bucket::Conflicted)
+                        .iter()
+                        .find(|f| f.path == path)
+                        .cloned();
+                    let (ours, theirs) = change
+                        .map(|f| (f.x != 'D', f.y != 'D'))
+                        .unwrap_or((true, true));
+                    let mut sides: Vec<(&'static str, &'static str, ConflictSide, bool)> =
+                        Vec::new();
+                    if ours {
+                        sides.push(("ctx-ours", "Use our version", ConflictSide::Ours, false));
+                    }
+                    if theirs {
+                        sides.push((
+                            "ctx-theirs",
+                            "Use their version",
+                            ConflictSide::Theirs,
+                            false,
+                        ));
+                    }
+                    if !ours || !theirs {
+                        sides.push(if theirs {
+                            ("ctx-del", "Keep deleted", ConflictSide::Ours, true)
+                        } else {
+                            ("ctx-del", "Delete file", ConflictSide::Theirs, true)
+                        });
+                    }
+                    for (i, (id, text, side, delete)) in sides.into_iter().enumerate() {
+                        let (o, p, c) = (self.overlays.clone(), path.clone(), close.clone());
+                        pop = pop.child(
+                            menu_row((id, i), text)
+                                .icon(if delete { "trash" } else { "branch" })
+                                .on_click(move |_, _, cx| {
+                                    o.update(cx, |o, cx| {
+                                        o.confirm(
+                                            ConfirmAction::ResolveConflict {
+                                                path: p.clone(),
+                                                side,
+                                                delete,
+                                            },
+                                            None,
+                                            cx,
+                                        )
+                                    });
+                                    c(cx);
+                                }),
+                        );
+                    }
+                } else if bucket != Bucket::Staged {
                     pop = pop.child(
                         menu_row("ctx-discard", "Discard changes…")
                             .icon("trash")
@@ -607,7 +673,9 @@ impl SidebarView {
                         menu_row("ctx-editor", "Open in Editor")
                             .icon("external")
                             .on_click(move |_, _, cx| {
-                                m3.update(cx, |m, cx| m.open_in_editor(cx));
+                                // The file itself — where conflicts are
+                                // resolved — not the repo root.
+                                m3.update(cx, |m, cx| m.open_file_in_editor(&pe, cx));
                                 c5(cx);
                             }),
                     )

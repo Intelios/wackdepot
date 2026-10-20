@@ -6,18 +6,20 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, FontWeight, IntoElement, ParentElement, Render,
-    SharedString, Styled, WeakEntity, Window, div, prelude::*, px,
+    AnyElement, App, AppContext as _, Context, Entity, FontWeight, IntoElement, ParentElement,
+    Render, SharedString, Styled, WeakEntity, Window, div, prelude::*, px,
 };
 use wackdepot_core::merge::{MergeMethod, MergePreview};
+use wackdepot_core::stage::ConflictSide;
+use wackdepot_core::status::FileChange;
 
 use crate::app::overlays::Overlays;
-use crate::components::button::button;
-use crate::components::mark::accent_mark;
+use crate::components::button::{button, icon_button};
+use crate::components::mark::{accent_mark, status_mark};
 use crate::components::menu::{menu_heading, menu_row};
 use crate::components::pill_track::pill_track;
 use crate::components::text_input::{TextInput, TextInputEvent};
-use crate::model::RepoModel;
+use crate::model::{Bucket, RepoEvent, RepoModel};
 use crate::theme::{ActiveTheme, metrics};
 
 /// A labelled input on a solid well with a focus halo.
@@ -900,5 +902,171 @@ impl Render for MergeDialog {
                     .child(cancel)
                     .child(go),
             )
+    }
+}
+
+// ── Conflicts ─────────────────────────────────────────────────────────
+
+/// The merge-conflicts overview: every unmerged path with its wholesale
+/// outs — take ours, take theirs, or open the file and work the markers.
+/// Resolving is immediate; rows leave the list as the snapshot catches up.
+pub struct ConflictsDialog {
+    model: Entity<RepoModel>,
+    overlays: WeakEntity<Overlays>,
+}
+
+impl ConflictsDialog {
+    pub fn new(
+        model: Entity<RepoModel>,
+        overlays: WeakEntity<Overlays>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        cx.subscribe(&model, |_: &mut Self, _, e: &RepoEvent, cx| {
+            if matches!(e, RepoEvent::Snapshot) {
+                cx.notify();
+            }
+        })
+        .detach();
+        Self { model, overlays }
+    }
+
+    /// One conflicted path: status mark, name, and the side/deletion
+    /// resolution buttons its unmerged codes allow.
+    fn conflict_row(&self, i: usize, f: &FileChange, cx: &mut Context<Self>) -> impl IntoElement {
+        let (dir, name) = match f.path.rfind('/') {
+            Some(ix) => (f.path[..=ix].to_string(), f.path[ix + 1..].to_string()),
+            None => (String::new(), f.path.clone()),
+        };
+        let m = self.model.clone();
+        let path = f.path.clone();
+        let open = icon_button(("conflict-open", i), "external")
+            .small()
+            .on_click(move |_, _, cx| m.update(cx, |m, cx| m.open_file_in_editor(&path, cx)));
+        let side = |id: &'static str, label: &'static str, s: ConflictSide, delete: bool| {
+            let (m, path) = (self.model.clone(), f.path.clone());
+            button((id, i), label).small().on_click(move |_, _, cx| {
+                m.update(cx, |m, cx| m.resolve_conflict(path.clone(), s, delete, cx))
+            })
+        };
+        // Porcelain's unmerged XY: 'D' means that side deleted the file —
+        // resolving to it is `git rm`, not `checkout --theirs`.
+        let (ours, theirs) = (f.x != 'D', f.y != 'D');
+        let mut actions = div().flex_none().flex().items_center().gap(px(4.));
+        actions = match (ours, theirs) {
+            (true, true) => actions
+                .child(side("row-ours", "Use ours", ConflictSide::Ours, false))
+                .child(side(
+                    "row-theirs",
+                    "Use theirs",
+                    ConflictSide::Theirs,
+                    false,
+                )),
+            (true, false) => actions
+                .child(side("row-ours", "Use ours", ConflictSide::Ours, false))
+                .child(side(
+                    "row-delete",
+                    "Delete file",
+                    ConflictSide::Theirs,
+                    true,
+                )),
+            (false, true) => actions
+                .child(side("row-delete", "Keep deleted", ConflictSide::Ours, true))
+                .child(side(
+                    "row-theirs",
+                    "Use theirs",
+                    ConflictSide::Theirs,
+                    false,
+                )),
+            (false, false) => {
+                actions.child(side("row-delete", "Keep deleted", ConflictSide::Ours, true))
+            }
+        };
+        actions = actions.child(open);
+        let t = cx.theme().clone();
+        div()
+            .id(("conflict-row", i))
+            .flex()
+            .items_center()
+            .gap(px(9.))
+            .h(px(34.))
+            .px(px(9.))
+            .rounded(px(metrics::RADIUS_MENU_ROW))
+            .child(status_mark('U'))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .font_family(t.mono.clone())
+                    .text_size(px(12.5))
+                    .whitespace_nowrap()
+                    .child(
+                        div()
+                            .flex_shrink(1.)
+                            .min_w_0()
+                            .overflow_hidden()
+                            .flex()
+                            .justify_end()
+                            .child(div().flex_none().text_color(t.text_faint).child(dir)),
+                    )
+                    .child(div().flex_none().text_color(t.text).child(name)),
+            )
+            .child(actions)
+    }
+}
+
+impl Render for ConflictsDialog {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let files: Vec<FileChange> = self.model.read(cx).snap.bucket(Bucket::Conflicted).to_vec();
+        let n = files.len();
+        let rows: Vec<AnyElement> = if files.is_empty() {
+            vec![
+                div()
+                    .px(px(9.))
+                    .py(px(10.))
+                    .text_size(px(12.5))
+                    .text_color(t.text_dim)
+                    .child("Every conflict is resolved — continue the operation to finish.")
+                    .into_any_element(),
+            ]
+        } else {
+            files
+                .iter()
+                .enumerate()
+                .map(|(i, f)| self.conflict_row(i, f, cx).into_any_element())
+                .collect()
+        };
+        let o = self.overlays.clone();
+        let done = button("conflicts-done", "Done")
+            .primary()
+            .on_click(move |_, _, cx| {
+                if let Some(o) = o.upgrade() {
+                    o.update(cx, |o, cx| o.close(cx));
+                }
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(head(
+                "conflict",
+                &format!("{n} conflicted file{}", if n == 1 { "" } else { "s" }),
+                "Take a side outright, or open a file and work the markers.",
+                cx,
+            ))
+            .child(
+                div()
+                    .id("conflicts-list")
+                    .max_h(px(300.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .children(rows),
+            )
+            .child(div().flex().justify_end().child(done))
     }
 }

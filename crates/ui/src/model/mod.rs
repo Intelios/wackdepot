@@ -24,7 +24,7 @@ use crate::app::prefs;
 use crate::watcher::{self, RepoWatcher};
 
 pub use confirm::ConfirmAction;
-pub use diff_load::{DiffDoc, DiffState, DocKind};
+pub use diff_load::{DiffDoc, DiffState, DocKind, SidesDoc};
 pub use selection::{Selection, Tab};
 pub use snapshot::{Bucket, Snapshot};
 

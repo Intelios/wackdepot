@@ -40,6 +40,17 @@ pub fn file_versions(repo: &Path, path: &str, old_path: Option<&str>, side: Diff
     }
 }
 
+/// The two index stages of a conflicted file — ours (`:2:`) and theirs
+/// (`:3:`) — for highlighting the combined-diff view. A side deleted in
+/// the merge has no blob and comes back `None`.
+pub fn conflict_versions(repo: &Path, path: &str) -> Versions {
+    let g = Git::new(repo);
+    Versions {
+        old: show(&g, &format!(":2:{path}")),
+        new: show(&g, &format!(":3:{path}")),
+    }
+}
+
 /// The two sides of a file in commit `sha`: first parent → commit. Root
 /// commits have no old side.
 pub fn commit_file_versions(

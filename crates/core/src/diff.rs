@@ -223,7 +223,7 @@ pub fn diff_with(
 
 /// `git ls-files -u -- <file>` → `Some((ours, theirs))` stage presence when
 /// the path is unmerged. A file deleted on both sides has stage 1 only.
-fn unmerged_sides(g: &Git, file: &str) -> Option<(bool, bool)> {
+pub(crate) fn unmerged_sides(g: &Git, file: &str) -> Option<(bool, bool)> {
     let out = g.try_run(["ls-files", "-u", "--", file]).ok()?;
     if !out.ok() || out.stdout.trim().is_empty() {
         return None;
@@ -236,6 +236,46 @@ fn unmerged_sides(g: &Git, file: &str) -> Option<(bool, bool)> {
         })
     };
     Some((has(" 2"), has(" 3")))
+}
+
+/// The combined-diff view for a conflicted file: `git diff :2:file :3:file`,
+/// our version against theirs — an ordinary patch whose removals are ours
+/// and additions are theirs, so what each side holds is obvious at a glance.
+/// `None` when either stage is absent (a side deleted the file — there's
+/// nothing to compare) or the path isn't unmerged.
+pub fn sides_diff(repo: &Path, file: &str) -> Result<Option<FileDiff>, String> {
+    let g = Git::new(repo);
+    let Some((true, true)) = unmerged_sides(&g, file) else {
+        return Ok(None);
+    };
+    let out = g.run([
+        "diff",
+        "--no-color",
+        &format!(":2:{file}"),
+        &format!(":3:{file}"),
+    ])?;
+    let mut d = parse_diff(&out.stdout)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| FileDiff {
+            // Same content on both sides — nothing differs.
+            old_path: Some(file.to_string()),
+            new_path: Some(file.to_string()),
+            status: DiffFileStatus::Modified,
+            header_text: String::new(),
+            hunks: Vec::new(),
+            is_binary: false,
+            conflict: None,
+        });
+    // Stage paths are the file's path — keep the label stable no matter
+    // what blob-pair header git printed.
+    if d.old_path.is_none() {
+        d.old_path = Some(file.to_string());
+    }
+    if d.new_path.is_none() {
+        d.new_path = Some(file.to_string());
+    }
+    Ok(Some(d))
 }
 
 /// Context lines kept on either side of a conflict region.
@@ -1320,6 +1360,44 @@ Binary files a/pic.png and b/pic.png differ
         assert!(d.is_binary);
         assert!(d.hunks.is_empty());
         assert!(d.conflict.is_some());
+    }
+
+    #[test]
+    fn sides_diff_pairs_ours_against_theirs() {
+        let (dir, _g) = conflicted_repo();
+        let d = sides_diff(dir.path(), "f.txt").unwrap().unwrap();
+        // Ours is the old side, theirs the new: -MAIN +SIDE.
+        let h = &d.hunks[0];
+        let kinds: Vec<_> = h
+            .lines
+            .iter()
+            .filter_map(|l| match l.kind {
+                DiffLineKind::Removed => Some(format!("-{}", l.text)),
+                DiffLineKind::Added => Some(format!("+{}", l.text)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, vec!["-MAIN", "+SIDE"]);
+        assert_eq!(d.old_path.as_deref(), Some("f.txt"));
+        assert_eq!(d.new_path.as_deref(), Some("f.txt"));
+
+        // A side that deleted the file has nothing to compare.
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "g.txt", "x\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "base", "").unwrap();
+        g.run(["checkout", "-b", "dside"]).unwrap();
+        g.run(["rm", "-q", "g.txt"]).unwrap();
+        commit(dir.path(), "del", "").unwrap();
+        g.run(["checkout", "main"]).unwrap();
+        write_file(dir.path(), "g.txt", "changed\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "mod", "").unwrap();
+        assert!(!git_out(&g, ["merge", "dside"]).ok());
+        assert!(sides_diff(dir.path(), "g.txt").unwrap().is_none());
+
+        // A merged (non-conflicted) path has no stages to pair.
+        assert!(sides_diff(dir.path(), "absent.txt").unwrap().is_none());
     }
 
     #[test]

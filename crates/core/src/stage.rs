@@ -348,12 +348,14 @@ pub fn stage_file(repo: &Path, path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `git add -- <paths…>` in batches — one process per 200 paths instead of
-/// one per file (stage-all on a big change set).
+/// `git add -A -- <paths…>` in batches — one process per 200 paths instead
+/// of one per file (stage-all on a big change set). `-A` so a missing
+/// worktree file (a conflict resolved by deleting it) stages the deletion
+/// instead of failing.
 pub fn stage_paths(repo: &Path, paths: &[String]) -> Result<(), String> {
     let g = Git::new(repo);
     for chunk in paths.chunks(200) {
-        let mut args: Vec<&str> = vec!["add", "--"];
+        let mut args: Vec<&str> = vec!["add", "-A", "--"];
         args.extend(chunk.iter().map(String::as_str));
         g.run(args)?;
     }
@@ -447,10 +449,71 @@ pub fn trash_file(repo: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(dst)
 }
 
-/// `git add` a conflicted path — marks it resolved once the user has edited
-/// the conflict markers away.
+/// `git add -A` a conflicted path — marks it resolved once the user has
+/// edited the conflict markers away, or deleted the file.
 pub fn mark_resolved(repo: &Path, path: &str) -> Result<(), String> {
-    stage_file(repo, path)
+    Git::new(repo).run(["add", "-A", "--", path])?;
+    Ok(())
+}
+
+/// Which parent's version of a conflicted path wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictSide {
+    /// Stage 2 — the version the merge started on (HEAD).
+    Ours,
+    /// Stage 3 — the version being merged in.
+    Theirs,
+}
+
+impl ConflictSide {
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Ours => "--ours",
+            Self::Theirs => "--theirs",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ours => "our",
+            Self::Theirs => "their",
+        }
+    }
+}
+
+/// Resolve a conflicted path wholesale: `git checkout --ours/--theirs`
+/// puts that side's version in the worktree, then `git add` marks it
+/// resolved. With `delete` it's `git rm` instead — how a modify/delete
+/// conflict keeps the deletion. `Err` when the chosen side doesn't exist
+/// (a side that deleted the file has no version to take).
+pub fn resolve_conflict(
+    repo: &Path,
+    path: &str,
+    side: ConflictSide,
+    delete: bool,
+) -> Result<(), String> {
+    let g = Git::new(repo);
+    if delete {
+        g.run(["rm", "-q", "--", path])?;
+        return Ok(());
+    }
+    let out = g.try_run(["checkout", side.flag(), "--", path])?;
+    if !out.ok() {
+        let msg = failure_message(&out);
+        return Err(if msg.is_empty() {
+            format!(
+                "Couldn't take {} version of {path} — that side has none.",
+                side.label()
+            )
+        } else {
+            format!(
+                "Couldn't take {} version of {path} — {}",
+                side.label(),
+                lowercase_first(&msg)
+            )
+        });
+    }
+    mark_resolved(repo, path)
 }
 
 #[cfg(test)]
@@ -459,7 +522,7 @@ mod tests {
     use crate::commit::commit;
     use crate::diff::{DiffLineKind, DiffSide, diff};
     use crate::status::status;
-    use crate::testutil::{read_file, temp_repo, write_file};
+    use crate::testutil::{git_out, read_file, temp_repo, write_file};
 
     fn staged_names(repo: &Path) -> Vec<String> {
         Git::new(repo)
@@ -783,6 +846,99 @@ mod tests {
             model.extend(base[old_i..].iter().cloned());
             assert_eq!(cached(&g), model.join("\n") + "\n", "round {round}");
         }
+    }
+
+    /// A repo left mid-merge with `f.txt` conflicted (diverging edits on
+    /// main and a `side` branch).
+    fn conflicted_repo() -> (tempfile::TempDir, Git) {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "f.txt", "a\nb\nc\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "base", "").unwrap();
+        g.run(["checkout", "-b", "side"]).unwrap();
+        write_file(dir.path(), "f.txt", "a\nSIDE\nc\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "side", "").unwrap();
+        g.run(["checkout", "main"]).unwrap();
+        write_file(dir.path(), "f.txt", "a\nMAIN\nc\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "main", "").unwrap();
+        assert!(!git_out(&g, ["merge", "side"]).ok());
+        (dir, g)
+    }
+
+    /// A modify/delete conflict: `dside` deleted `f.txt`, main changed it.
+    fn modify_delete_repo() -> (tempfile::TempDir, Git) {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "f.txt", "keep\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "base", "").unwrap();
+        g.run(["checkout", "-b", "dside"]).unwrap();
+        g.run(["rm", "-q", "f.txt"]).unwrap();
+        commit(dir.path(), "del", "").unwrap();
+        g.run(["checkout", "main"]).unwrap();
+        write_file(dir.path(), "f.txt", "changed\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "mod", "").unwrap();
+        assert!(!git_out(&g, ["merge", "dside"]).ok());
+        (dir, g)
+    }
+
+    fn unmerged(repo: &Path) -> usize {
+        Git::new(repo)
+            .run(["ls-files", "-u"])
+            .unwrap()
+            .stdout
+            .lines()
+            .count()
+    }
+
+    #[test]
+    fn resolve_conflict_takes_a_side() {
+        let (dir, _g) = conflicted_repo();
+        resolve_conflict(dir.path(), "f.txt", ConflictSide::Theirs, false).unwrap();
+        assert_eq!(unmerged(dir.path()), 0);
+        assert_eq!(read_file(dir.path(), "f.txt"), "a\nSIDE\nc\n");
+
+        let (dir, _g) = conflicted_repo();
+        resolve_conflict(dir.path(), "f.txt", ConflictSide::Ours, false).unwrap();
+        assert_eq!(unmerged(dir.path()), 0);
+        assert_eq!(read_file(dir.path(), "f.txt"), "a\nMAIN\nc\n");
+    }
+
+    #[test]
+    fn resolve_conflict_delete_keeps_the_deletion() {
+        // modify/delete: they deleted it, we changed it.
+        let (dir, _g) = modify_delete_repo();
+        resolve_conflict(dir.path(), "f.txt", ConflictSide::Theirs, true).unwrap();
+        assert_eq!(unmerged(dir.path()), 0);
+        assert!(!dir.path().join("f.txt").exists());
+        // The deletion is staged.
+        let s = status(dir.path()).unwrap();
+        assert!(s.staged.iter().any(|f| f.path == "f.txt" && f.x == 'D'));
+    }
+
+    #[test]
+    fn resolve_conflict_errors_when_the_side_deleted() {
+        // modify/delete: taking "their" version doesn't exist — they deleted it.
+        let (dir, _g) = modify_delete_repo();
+        let e = resolve_conflict(dir.path(), "f.txt", ConflictSide::Theirs, false).unwrap_err();
+        assert!(e.contains("f.txt"), "{e}");
+        assert!(unmerged(dir.path()) > 0);
+        // Ours is fine.
+        resolve_conflict(dir.path(), "f.txt", ConflictSide::Ours, false).unwrap();
+        assert_eq!(read_file(dir.path(), "f.txt"), "changed\n");
+    }
+
+    #[test]
+    fn mark_resolved_stages_a_deletion() {
+        let (dir, _g) = modify_delete_repo();
+        // The user resolves by deleting the file outright.
+        std::fs::remove_file(dir.path().join("f.txt")).unwrap();
+        mark_resolved(dir.path(), "f.txt").unwrap();
+        assert_eq!(unmerged(dir.path()), 0);
+        let s = status(dir.path()).unwrap();
+        assert!(s.staged.iter().any(|f| f.path == "f.txt" && f.x == 'D'));
     }
 
     #[test]

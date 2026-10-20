@@ -17,7 +17,9 @@ use crate::icons::icon;
 use crate::model::{ConfirmAction, Notice, NoticeAction, NoticeKind, RepoModel};
 use crate::motion::{EASE, Motion, POP, id as mid};
 use crate::theme::{ActiveTheme, metrics};
-use crate::views::dialogs::{CloneDialog, MergeDialog, NameDialog, NameKind, NewRepoDialog};
+use crate::views::dialogs::{
+    CloneDialog, ConflictsDialog, MergeDialog, NameDialog, NameKind, NewRepoDialog,
+};
 
 /// A discard waiting on its confirm, carrying the diff it applies to.
 pub enum Pending {
@@ -35,6 +37,7 @@ pub enum Dialog {
     NewRepo(Entity<NewRepoDialog>),
     Name(Entity<NameDialog>),
     Merge(Entity<MergeDialog>),
+    Conflicts(Entity<ConflictsDialog>),
 }
 
 pub struct TaskConfirmation {
@@ -123,6 +126,15 @@ impl Overlays {
         let this = cx.entity().downgrade();
         let d = cx.new(|cx| MergeDialog::new(model, this, preselect, window, cx));
         self.dialog = Some(Dialog::Merge(d));
+        cx.notify();
+    }
+
+    /// The conflicted-file overview — per-file ours/theirs/editor outs.
+    pub fn open_conflicts(&mut self, cx: &mut Context<Self>) {
+        let model = self.model.clone();
+        let this = cx.entity().downgrade();
+        let d = cx.new(|cx| ConflictsDialog::new(model, this, cx));
+        self.dialog = Some(Dialog::Conflicts(d));
         cx.notify();
     }
 
@@ -415,10 +427,17 @@ impl Render for Overlays {
                 Dialog::NewRepo(d) => d.clone().into_any_element(),
                 Dialog::Name(d) => d.clone().into_any_element(),
                 Dialog::Merge(d) => d.clone().into_any_element(),
+                Dialog::Conflicts(d) => d.clone().into_any_element(),
             };
             let card = div()
                 .id("dialog-card")
-                .w(px(440.))
+                .w(px(
+                    if matches!(self.dialog.as_ref().expect("checked"), Dialog::Conflicts(_)) {
+                        560.
+                    } else {
+                        440.
+                    },
+                ))
                 .p(px(20.))
                 .rounded(px(metrics::RADIUS_CARD + 2.0))
                 .bg(t.surface)

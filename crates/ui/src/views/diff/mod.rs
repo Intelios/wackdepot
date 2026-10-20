@@ -13,11 +13,11 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, FontWeight, IntoElement, KeyBinding,
-    ListAlignment, ListState, MouseButton, ParentElement, Render, ScrollHandle, Styled, StyledText,
-    Window, div, list, point, prelude::*, px,
+    ListAlignment, ListOffset, ListState, MouseButton, ParentElement, Render, ScrollHandle, Styled,
+    StyledText, Window, div, list, point, prelude::*, px,
 };
 use wackdepot_core::diff::{DiffFileStatus, DiffLine, DiffLineKind, FileDiff};
-use wackdepot_core::stage::LineSel;
+use wackdepot_core::stage::{ConflictSide, LineSel};
 
 use crate::app::overlays::{Overlays, Pending};
 use crate::app::prefs;
@@ -73,8 +73,19 @@ pub struct DiffCard {
     drag: Option<bool>,
     /// SHA of the commit whose body is expanded past its clamp.
     body_expanded: Option<String>,
+    /// A conflicted file shows its marker view or the ours↔theirs patch.
+    conflict_view: ConflictView,
     tab: Tab,
     remembered: [Option<SavedDiff>; 2],
+}
+
+/// The two readings of a conflicted file: the worktree copy with its
+/// `<<<<<<<` regions, or the merge's combined view — our index version
+/// against theirs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConflictView {
+    Markers,
+    Sides,
 }
 
 struct SavedDiff {
@@ -130,6 +141,7 @@ impl DiffCard {
             sel: BTreeSet::new(),
             drag: None,
             body_expanded: None,
+            conflict_view: ConflictView::Markers,
             tab,
             remembered: [None, None],
         }
@@ -168,6 +180,9 @@ impl DiffCard {
             (Some(a), Some(b)) => a.selection == b.selection,
             _ => false,
         };
+        if !same_target {
+            self.conflict_view = ConflictView::Markers;
+        }
         // A refreshed diff for the same file keeps the scroll position; the
         // line pick is dropped because line numbers may have shifted.
         self.doc = doc;
@@ -187,7 +202,7 @@ impl DiffCard {
     }
 
     fn rebuild(&mut self, keep_scroll: bool) {
-        let rows = match self.doc.as_ref().and_then(|d| d.file.as_ref()) {
+        let rows = match self.shown_file() {
             Some(f) => build_rows(f, self.split),
             None => Vec::new(),
         };
@@ -203,6 +218,60 @@ impl DiffCard {
         self.doc.as_ref()?.file.as_ref()
     }
 
+    /// The file the body should render — the marker view of a conflict,
+    /// or the ours↔theirs patch when that's the picked view.
+    fn shown_file(&self) -> Option<&FileDiff> {
+        match self.conflict_view {
+            ConflictView::Sides => self
+                .doc
+                .as_ref()
+                .and_then(|d| d.sides.as_ref())
+                .map(|s| &s.file)
+                .or_else(|| self.file()),
+            ConflictView::Markers => self.file(),
+        }
+    }
+
+    /// Hunks that carry at least one conflict marker, in order — the
+    /// targets of the prev/next conflict navigation.
+    fn conflict_hunks(&self) -> Vec<usize> {
+        self.file()
+            .map(|f| {
+                f.hunks
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(hi, h)| {
+                        h.lines
+                            .iter()
+                            .any(|l| l.kind == DiffLineKind::Marker)
+                            .then_some(hi)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Jump the diff list to the conflict `delta` hunks away (wraps).
+    fn navigate_conflict(&mut self, hunk: usize, delta: isize, cx: &mut Context<Self>) {
+        let targets = self.conflict_hunks();
+        if targets.len() < 2 {
+            return;
+        }
+        let cur = targets.iter().position(|t| *t == hunk).unwrap_or(0) as isize;
+        let next = targets[(cur + delta).rem_euclid(targets.len() as isize) as usize];
+        if let Some(ix) = self
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Hunk { hunk: h } if *h == next))
+        {
+            self.list.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+        }
+    }
+
     fn bucket(&self) -> Option<Bucket> {
         match self.doc.as_ref()?.kind {
             DocKind::Working { bucket } => Some(bucket),
@@ -211,7 +280,7 @@ impl DiffCard {
     }
 
     fn line(&self, hunk: usize, line: usize) -> Option<&DiffLine> {
-        self.file()?.hunks.get(hunk)?.lines.get(line)
+        self.shown_file()?.hunks.get(hunk)?.lines.get(line)
     }
 
     fn changeable(&self, hunk: usize, line: usize) -> bool {
@@ -329,6 +398,32 @@ impl DiffCard {
         let bucket = self.bucket();
         let entity = cx.entity();
         let mut actions = div().flex().items_center().gap(px(4.));
+        // A conflict hunk in the markers view gets prev/next conflict
+        // navigation — the per-hunk way to walk the regions.
+        let conflicted = self
+            .file()
+            .is_some_and(|f| f.status == DiffFileStatus::Conflicted);
+        if conflicted
+            && self.conflict_view == ConflictView::Markers
+            && h.lines.iter().any(|l| l.kind == DiffLineKind::Marker)
+            && self.conflict_hunks().len() > 1
+        {
+            let (e1, e2) = (entity.clone(), entity.clone());
+            actions = actions.child(
+                icon_button(("conflict-prev", hunk), "arrow-up")
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        e1.update(cx, |d, cx| d.navigate_conflict(hunk, -1, cx))
+                    }),
+            );
+            actions = actions.child(
+                icon_button(("conflict-next", hunk), "arrow-down")
+                    .small()
+                    .on_click(move |_, _, cx| {
+                        e2.update(cx, |d, cx| d.navigate_conflict(hunk, 1, cx))
+                    }),
+            );
+        }
         if stageable {
             let e = entity.clone();
             let label = if bucket == Some(Bucket::Staged) {
@@ -430,11 +525,20 @@ impl DiffCard {
 
     fn code(&self, l: &DiffLine, hunk: usize, line: usize, t: &Theme) -> impl IntoElement {
         let doc = self.doc.as_ref();
-        let spans = doc.and_then(|d| d.spans(l));
-        let words = doc
-            .and_then(|d| d.words.get(hunk))
-            .and_then(|w| w.get(line))
-            .and_then(|w| w.as_deref());
+        let sides = match self.conflict_view {
+            ConflictView::Sides => doc.and_then(|d| d.sides.as_ref()),
+            ConflictView::Markers => None,
+        };
+        let spans = match sides {
+            Some(s) => s.spans(l),
+            None => doc.and_then(|d| d.spans(l)),
+        };
+        let words = match sides {
+            Some(s) => s.words.get(hunk),
+            None => doc.and_then(|d| d.words.get(hunk)),
+        }
+        .and_then(|w| w.get(line))
+        .and_then(|w| w.as_deref());
         let word_bg = if l.kind == DiffLineKind::Removed {
             t.sem.diff_del_word
         } else {
@@ -673,7 +777,39 @@ impl DiffCard {
                             .child(n)
                     })),
             )
-            .child(self.view_controls(cx))
+            .child(self.head_controls(file, cx))
+    }
+
+    /// The head band's right side: the markers/sides picker for a
+    /// conflicted file, the usual whitespace+layout controls otherwise.
+    fn head_controls(&self, file: &FileDiff, cx: &mut Context<Self>) -> AnyElement {
+        if file.status == DiffFileStatus::Conflicted {
+            // Only when both index stages exist is there a sides patch
+            // to compare; else the marker view is the whole story.
+            let has_sides = self.doc.as_ref().is_some_and(|d| d.sides.is_some());
+            if !has_sides {
+                return div().into_any_element();
+            }
+            let entity = cx.entity();
+            return pill_track("conflict-view")
+                .height(26.)
+                .item("Markers")
+                .item("Ours ↔ Theirs")
+                .selected(usize::from(self.conflict_view == ConflictView::Sides))
+                .on_select(move |i, _, cx| {
+                    entity.update(cx, |d, cx| {
+                        d.conflict_view = if i == 1 {
+                            ConflictView::Sides
+                        } else {
+                            ConflictView::Markers
+                        };
+                        d.rebuild(false);
+                        cx.notify();
+                    })
+                })
+                .into_any_element();
+        }
+        self.view_controls(cx).into_any_element()
     }
 
     fn commit_head(&self, doc: &DiffDoc, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1015,9 +1151,9 @@ impl DiffCard {
             .into_any_element()
     }
 
-    /// A conflicted file: the worktree copy with its marker regions, led by
-    /// a warning banner with the two ways out — open it in an editor, or
-    /// call it resolved (which asks first when markers are still inside).
+    /// A conflicted file: the marker (or ours↔theirs) view led by a warning
+    /// banner with every way out — take a side wholesale, open it in an
+    /// editor, or call it resolved (which asks first when markers remain).
     fn conflicted_body(&self, file: &FileDiff, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let info = file.conflict.clone().unwrap_or_default();
@@ -1069,8 +1205,71 @@ impl DiffCard {
         let open = button("conflict-open", "Open in Editor")
             .small()
             .on_click(move |_, _, cx| m.update(cx, |m, cx| m.open_file_in_editor(&path, cx)));
-        let path = file.path().to_string();
+        // The wholesale outs: take a side's version outright, or record the
+        // deletion when that's the side that already deleted the file.
         let overlays = self.overlays.clone();
+        let side_button = |id: &'static str,
+                           label: &'static str,
+                           side: ConflictSide,
+                           delete: bool,
+                           path: String,
+                           o: Entity<Overlays>| {
+            button(id, label).small().on_click(move |_, _, cx| {
+                o.update(cx, |o, cx| {
+                    o.confirm(
+                        ConfirmAction::ResolveConflict {
+                            path: path.clone(),
+                            side,
+                            delete,
+                        },
+                        None,
+                        cx,
+                    )
+                })
+            })
+        };
+        let mut b = banner(Tone::Warning, title).body(body);
+        let path = file.path().to_string();
+        if info.ours {
+            b = b.action(side_button(
+                "conflict-ours",
+                "Use ours",
+                ConflictSide::Ours,
+                false,
+                path.clone(),
+                overlays.clone(),
+            ));
+        }
+        if info.theirs {
+            b = b.action(side_button(
+                "conflict-theirs",
+                "Use theirs",
+                ConflictSide::Theirs,
+                false,
+                path.clone(),
+                overlays.clone(),
+            ));
+        }
+        // The deleted side resolves to a deletion (`git rm`): theirs in a
+        // modify/delete (UD), ours in a delete/modify (DU).
+        if !info.ours || !info.theirs {
+            let (side, label) = if info.theirs {
+                (ConflictSide::Ours, "Keep deleted")
+            } else {
+                (ConflictSide::Theirs, "Delete file")
+            };
+            b = b.action(side_button(
+                "conflict-delete",
+                label,
+                side,
+                true,
+                path.clone(),
+                overlays.clone(),
+            ));
+        }
+        b = b.action(open);
+        let path = file.path().to_string();
+        let o = overlays.clone();
         let m = self.model.clone();
         let resolve = button("conflict-resolve", "Mark resolved")
             .small()
@@ -1079,7 +1278,7 @@ impl DiffCard {
                 if info.regions > 0 {
                     // Markers are still inside — resolving now would commit
                     // them, so ask first.
-                    overlays.update(cx, |o, cx| {
+                    o.update(cx, |o, cx| {
                         o.confirm(ConfirmAction::MarkResolved { path: path.clone() }, None, cx)
                     });
                 } else {
@@ -1088,14 +1287,12 @@ impl DiffCard {
                     });
                 }
             });
-        let strip = div().flex_none().p(px(10.)).child(
-            banner(Tone::Warning, title)
-                .body(body)
-                .action(open)
-                .action(resolve),
-        );
+        b = b.action(resolve);
+        let strip = div().flex_none().p(px(10.)).child(b);
 
-        let content: AnyElement = if file.is_binary {
+        // The body follows the picked view — markers or ours↔theirs.
+        let shown = self.shown_file().unwrap_or(file);
+        let content: AnyElement = if shown.is_binary {
             div()
                 .size_full()
                 .flex()
@@ -1106,7 +1303,7 @@ impl DiffCard {
                         .body("There's no text to show — resolve this one in an editor or Finder."),
                 )
                 .into_any_element()
-        } else if file.hunks.is_empty() {
+        } else if shown.hunks.is_empty() {
             div()
                 .size_full()
                 .flex()
@@ -1116,7 +1313,7 @@ impl DiffCard {
                     empty_state("conflict", "Nothing to show").body(if !info.in_worktree {
                         "The file is deleted in the worktree — there is no text to show."
                     } else {
-                        "The file is empty."
+                        "The file is empty — or both versions of it match."
                     }),
                 )
                 .into_any_element()

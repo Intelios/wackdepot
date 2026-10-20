@@ -1,5 +1,7 @@
 //! Destructive actions that ask first, with their dialog copy.
 
+use wackdepot_core::stage::ConflictSide;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmAction {
     DiscardFile {
@@ -34,6 +36,13 @@ pub enum ConfirmAction {
     MarkResolved {
         path: String,
     },
+    /// `git checkout --ours/--theirs` (or `git rm` when `delete`) a
+    /// conflicted path — resolves it with one side's version.
+    ResolveConflict {
+        path: String,
+        side: ConflictSide,
+        delete: bool,
+    },
     UndoCommit,
 }
 
@@ -51,6 +60,13 @@ impl ConfirmAction {
             Self::AbortOperation { what } => format!("Abort the {what}?"),
             Self::DropStash { .. } => "Drop this stash?".into(),
             Self::MarkResolved { path } => format!("Mark {} resolved?", file_name(path)),
+            Self::ResolveConflict { path, side, delete } => {
+                if *delete {
+                    format!("Delete {}?", file_name(path))
+                } else {
+                    format!("Use {} version of {}?", side_label(*side), file_name(path))
+                }
+            }
             Self::UndoCommit => "Undo the last commit?".into(),
         }
     }
@@ -67,6 +83,16 @@ impl ConfirmAction {
             Self::AbortOperation { .. } => "The repository goes back to how it was before it started. Resolved conflicts are lost.".into(),
             Self::DropStash { label, .. } => format!("“{label}” is deleted for good."),
             Self::MarkResolved { .. } => "Its conflict markers are still inside — they'd be staged as-is and could end up committed.".into(),
+            Self::ResolveConflict { delete: true, .. } => {
+                "The file is removed to resolve the conflict — the deletion is staged.".into()
+            }
+            Self::ResolveConflict { side, .. } => format!(
+                "The file becomes exactly {} version, losing any edits made since the merge started — and it's marked resolved.",
+                match side {
+                    ConflictSide::Ours => "this branch's",
+                    ConflictSide::Theirs => "the incoming",
+                }
+            ),
             Self::UndoCommit => "The commit is removed and its changes go back to Staged, ready to commit again.".into(),
         }
     }
@@ -82,8 +108,21 @@ impl ConfirmAction {
             Self::AbortOperation { .. } => "Abort",
             Self::DropStash { .. } => "Drop",
             Self::MarkResolved { .. } => "Mark resolved",
+            Self::ResolveConflict { delete: true, .. } => "Delete file",
+            Self::ResolveConflict {
+                side: ConflictSide::Ours,
+                ..
+            } => "Use ours",
+            Self::ResolveConflict { .. } => "Use theirs",
             Self::UndoCommit => "Undo commit",
         }
+    }
+}
+
+fn side_label(side: ConflictSide) -> &'static str {
+    match side {
+        ConflictSide::Ours => "our",
+        ConflictSide::Theirs => "their",
     }
 }
 

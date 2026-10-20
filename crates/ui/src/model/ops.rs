@@ -8,7 +8,7 @@ use gpui::Context;
 use wackdepot_core::commit::{CommitOptions, PickOutcome};
 use wackdepot_core::diff::{FileDiff, Hunk};
 use wackdepot_core::merge::{MergeMethod, MergeOutcome};
-use wackdepot_core::stage::LineSel;
+use wackdepot_core::stage::{ConflictSide, LineSel};
 use wackdepot_core::stash::StashAction;
 use wackdepot_core::status::Operation;
 use wackdepot_core::{branch, commit, merge, stage, stash, status, sync};
@@ -276,6 +276,25 @@ impl RepoModel {
         }
     }
 
+    /// Resolve one conflict wholesale: take a side's version
+    /// (`checkout --ours/--theirs`) or stage the deletion.
+    pub fn resolve_conflict(
+        &mut self,
+        path: String,
+        side: ConflictSide,
+        delete: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.run(
+            BusyOp::Other("Resolving"),
+            move |r, _| {
+                stage::resolve_conflict(r, &path, side, delete)?;
+                Ok(Done::quiet().beat(Beat::Staged { paths: vec![path] }))
+            },
+            cx,
+        );
+    }
+
     /// The group heading's action: unstage all, resolve all conflicts, or
     /// stage everything in the group.
     pub fn stage_group(&mut self, bucket: Bucket, cx: &mut Context<Self>) {
@@ -479,6 +498,9 @@ impl RepoModel {
             ConfirmAction::DropStash { sha, .. } => self.stash_action(sha, StashAction::Drop, cx),
             ConfirmAction::MarkResolved { path } => {
                 self.toggle_stage(path, Bucket::Conflicted, cx);
+            }
+            ConfirmAction::ResolveConflict { path, side, delete } => {
+                self.resolve_conflict(path, side, delete, cx);
             }
             ConfirmAction::UndoCommit => self.run(
                 BusyOp::Other("Undoing commit"),

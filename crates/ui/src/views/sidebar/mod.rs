@@ -165,29 +165,34 @@ impl SidebarView {
             "Everything's resolved — continue when you're ready.".to_string()
         };
         let (m, o) = (self.model.clone(), self.overlays.clone());
-        Some(
-            banner(Tone::Warning, title)
-                .body(body)
-                .action(
-                    button("op-continue", "Continue")
-                        .small()
-                        .lit(conflicts == 0)
-                        .disabled(conflicts > 0)
-                        .on_click(move |_, _, cx| {
-                            m.update(cx, |m, cx| m.continue_operation(op, cx))
-                        }),
-                )
-                .action(
-                    button("op-abort", "Abort")
-                        .small()
-                        .danger()
-                        .on_click(move |_, _, cx| {
-                            o.update(cx, |o, cx| {
-                                o.confirm(ConfirmAction::AbortOperation { what }, None, cx)
-                            });
-                        }),
-                ),
-        )
+        let mut b = banner(Tone::Warning, title).body(body);
+        if conflicts > 0 {
+            let o2 = o.clone();
+            b = b.action(
+                button("op-resolve", "Resolve…")
+                    .small()
+                    .on_click(move |_, _, cx| o2.update(cx, |o, cx| o.open_conflicts(cx))),
+            );
+        }
+        b = b
+            .action(
+                button("op-continue", "Continue")
+                    .small()
+                    .lit(conflicts == 0)
+                    .disabled(conflicts > 0)
+                    .on_click(move |_, _, cx| m.update(cx, |m, cx| m.continue_operation(op, cx))),
+            )
+            .action(
+                button("op-abort", "Abort")
+                    .small()
+                    .danger()
+                    .on_click(move |_, _, cx| {
+                        o.update(cx, |o, cx| {
+                            o.confirm(ConfirmAction::AbortOperation { what }, None, cx)
+                        });
+                    }),
+            );
+        Some(b)
     }
 }
 

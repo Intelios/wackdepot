@@ -21,6 +21,9 @@ pub struct DiffDoc {
     pub kind: DocKind,
     /// The file being shown (`None` for an empty commit).
     pub file: Option<FileDiff>,
+    /// The ours↔theirs patch of a conflicted file (the merge's combined
+    /// view); `None` unless the main file is `Conflicted` with both sides.
+    pub sides: Option<SidesDoc>,
     /// Word-level emphasis per hunk, per line (aligned with `hunk.lines`).
     pub words: Vec<Vec<Option<Ranges>>>,
     /// Whitespace was ignored — hunks/lines can't be staged from this diff.
@@ -45,18 +48,43 @@ impl DiffDoc {
 
     /// Syntax spans for a diff line, from whichever side it lives on.
     pub fn spans(&self, line: &wackdepot_core::diff::DiffLine) -> Option<&LineSpans> {
-        use wackdepot_core::diff::DiffLineKind;
-        let (hl, n) = match line.kind {
-            DiffLineKind::Removed => (self.old_hl.as_ref()?, line.old_lineno?),
-            // A conflicted diff's lines all carry worktree numbers.
-            DiffLineKind::Added
-            | DiffLineKind::Context
-            | DiffLineKind::Ours
-            | DiffLineKind::Base
-            | DiffLineKind::Theirs => (self.new_hl.as_ref()?, line.new_lineno?),
-            DiffLineKind::NoNewline | DiffLineKind::Marker => return None,
-        };
-        hl.get(n.checked_sub(1)? as usize)
+        spans_from(&self.old_hl, &self.new_hl, line)
+    }
+}
+
+/// Syntax spans for a diff line, from whichever side it lives on.
+fn spans_from<'a>(
+    old_hl: &'a Option<Arc<Vec<LineSpans>>>,
+    new_hl: &'a Option<Arc<Vec<LineSpans>>>,
+    line: &wackdepot_core::diff::DiffLine,
+) -> Option<&'a LineSpans> {
+    use wackdepot_core::diff::DiffLineKind;
+    let (hl, n) = match line.kind {
+        DiffLineKind::Removed => (old_hl.as_ref()?, line.old_lineno?),
+        // A conflicted diff's lines all carry worktree numbers.
+        DiffLineKind::Added
+        | DiffLineKind::Context
+        | DiffLineKind::Ours
+        | DiffLineKind::Base
+        | DiffLineKind::Theirs => (new_hl.as_ref()?, line.new_lineno?),
+        DiffLineKind::NoNewline | DiffLineKind::Marker => return None,
+    };
+    hl.get(n.checked_sub(1)? as usize)
+}
+
+/// The ours↔theirs view of a conflicted file, with its own highlighting:
+/// `old` is stage 2 (ours), `new` is stage 3 (theirs).
+#[derive(Debug)]
+pub struct SidesDoc {
+    pub file: FileDiff,
+    pub words: Vec<Vec<Option<Ranges>>>,
+    pub old_hl: Option<Arc<Vec<LineSpans>>>,
+    pub new_hl: Option<Arc<Vec<LineSpans>>>,
+}
+
+impl SidesDoc {
+    pub fn spans(&self, line: &wackdepot_core::diff::DiffLine) -> Option<&LineSpans> {
+        spans_from(&self.old_hl, &self.new_hl, line)
     }
 }
 
@@ -132,7 +160,23 @@ pub fn load(
                     blob::file_versions(repo, path, old_path, bucket.side()),
                 )
             };
+            // A conflicted file's other view: ours↔theirs straight from the
+            // index stages, highlighted from the stage blobs.
+            let sides = if file.status == DiffFileStatus::Conflicted {
+                diff::sides_diff(repo, path)?.map(|d| {
+                    let (old, new) = highlight_versions(path, blob::conflict_versions(repo, path));
+                    SidesDoc {
+                        words: word_ranges(&d),
+                        file: d,
+                        old_hl: old,
+                        new_hl: new,
+                    }
+                })
+            } else {
+                None
+            };
             Ok(DiffDoc {
+                sides,
                 words: word_ranges(&file),
                 selection: sel.clone(),
                 kind: DocKind::Working { bucket: *bucket },
@@ -174,6 +218,7 @@ pub fn load(
                 _ => (None, None),
             };
             Ok(DiffDoc {
+                sides: None,
                 words: file.as_ref().map(word_ranges).unwrap_or_default(),
                 selection,
                 kind: DocKind::Commit {
