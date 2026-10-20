@@ -19,7 +19,7 @@ use crate::components::pill_track::pill_track;
 use crate::components::spinner::orbit;
 use crate::components::text_input::{TextInput, TextInputEvent};
 use crate::icons::icon;
-use crate::model::{Beat, ConfirmAction, NoticeKind, RepoEvent, RepoModel};
+use crate::model::{Beat, ConfirmAction, GitHubTarget, NoticeKind, RepoEvent, RepoModel};
 use crate::motion::{GLIDE, Motion};
 use crate::theme::{ActiveTheme, metrics};
 use crate::views::dialogs::NameKind;
@@ -608,6 +608,7 @@ impl TitlebarView {
         }
         let filter = self.branch_filter.read(cx).content().to_lowercase();
         let branches = self.model.read(cx).snap.branches.clone();
+        let github = self.model.read(cx).snap.github.clone();
         // Merging needs a quiet lane: no op in flight and commits to land on.
         // A plain fn so every on_click closure can copy it freely.
         fn merge_guard(
@@ -661,8 +662,18 @@ impl TitlebarView {
                 .flex()
                 .gap(px(2.))
                 .opacity(0.)
-                .group_hover("branch-row", |s| s.opacity(1.))
-                .child(rename);
+                .group_hover("branch-row", |s| s.opacity(1.));
+            if let Some(url) = github
+                .as_deref()
+                .map(|base| GitHubTarget::Branch(name.clone()).url(base))
+            {
+                actions = actions.child(
+                    icon_button(("web", i), "globe")
+                        .small()
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                );
+            }
+            actions = actions.child(rename);
             if !b.is_current {
                 let (o, m, n, c) = (overlays.clone(), model.clone(), name.clone(), this.clone());
                 actions = actions.child(icon_button(("merge", i), "merge").small().on_click(
@@ -893,6 +904,14 @@ impl TitlebarView {
             }
         }
         pop.child(menu_separator(cx))
+            .child(item(
+                "view-github",
+                "View on GitHub",
+                "globe",
+                "⇧⌘G",
+                |m, cx| m.open_on_github(GitHubTarget::Repository, cx),
+                cx,
+            ))
             .child(item(
                 "open-editor",
                 "Open in Editor",

@@ -508,6 +508,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|ws, _: &ShowInFinder, _, cx| {
                 ws.model.update(cx, |m, cx| m.open_in_finder(cx))
             }))
+            .on_action(cx.listener(|ws, _: &ViewOnGitHub, _, cx| {
+                ws.model.update(cx, |m, cx| {
+                    m.open_on_github(crate::model::GitHubTarget::Repository, cx)
+                })
+            }))
             .on_action(cx.listener(|ws, _: &ToggleSplitDiff, _, cx| {
                 ws.toggle_pref(cx, |s| s.diff_split = !s.diff_split)
             }))

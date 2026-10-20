@@ -9,6 +9,7 @@ mod optimistic;
 pub mod pulls;
 pub mod selection;
 pub mod snapshot;
+pub mod web;
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,7 @@ pub use confirm::ConfirmAction;
 pub use diff_load::{DiffDoc, DiffState, DocKind, SidesDoc};
 pub use selection::{Selection, Tab};
 pub use snapshot::{Bucket, Snapshot};
+pub use web::GitHubTarget;
 
 /// How often the watcher flag and the soft tick are checked.
 const POLL: Duration = Duration::from_millis(200);
@@ -539,6 +541,7 @@ impl RepoModel {
             stats,
             identity: prev.identity.clone(),
             tip_unpushed: prev.tip_unpushed,
+            github: prev.github.clone(),
         });
         if let Some(sel) = &self.selection {
             self.selection = selection::repair(sel, &prev, &self.snap);

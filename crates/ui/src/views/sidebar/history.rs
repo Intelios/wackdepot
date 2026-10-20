@@ -226,13 +226,19 @@ impl SidebarView {
             .find(|c| c.sha == sha)
             .map(|c| c.short.clone())
             .unwrap_or_else(|| sha[..7.min(sha.len())].to_string());
-        let (m1, m2, m3) = (self.model.clone(), self.model.clone(), self.model.clone());
+        let (m1, m2, m3, m4) = (
+            self.model.clone(),
+            self.model.clone(),
+            self.model.clone(),
+            self.model.clone(),
+        );
         let (o1, o2, o3) = (
             self.overlays.clone(),
             self.overlays.clone(),
             self.overlays.clone(),
         );
-        let (s1, s2, s3, s4, s5, s6) = (
+        let (s1, s2, s3, s4, s5, s6, s7) = (
+            sha.clone(),
             sha.clone(),
             sha.clone(),
             sha.clone(),
@@ -241,7 +247,8 @@ impl SidebarView {
             sha.clone(),
         );
         let (sh1, sh2, sh3) = (short.clone(), short.clone(), short.clone());
-        let (c1, c2, c3, c4, c5, c6) = (
+        let (c1, c2, c3, c4, c5, c6, c7) = (
+            close.clone(),
             close.clone(),
             close.clone(),
             close.clone(),
@@ -264,6 +271,7 @@ impl SidebarView {
         let resettable = index.is_some_and(|i| i > 0) && !resets_pushed && !op_running;
         let dirty = snap.changed_count() > 0;
         let commits_gone = index.unwrap_or(0);
+        let on_github = snap.github.is_some();
         pop.child(
             menu_row("ctx-copy-sha", "Copy SHA")
                 .icon("copy")
@@ -271,6 +279,17 @@ impl SidebarView {
                 .on_click(move |_, _, cx| {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(s1.clone()));
                     c1(cx);
+                }),
+        )
+        .child(
+            menu_row("ctx-github", "View on GitHub")
+                .icon("globe")
+                .disabled(!on_github)
+                .on_click(move |_, _, cx| {
+                    m4.update(cx, |m, cx| {
+                        m.open_on_github(crate::model::GitHubTarget::Commit(s7.clone()), cx)
+                    });
+                    c7(cx);
                 }),
         )
         .child(menu_separator(cx))

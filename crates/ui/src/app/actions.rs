@@ -29,6 +29,7 @@ actions!(
         OpenInEditor,
         OpenInTerminal,
         ShowInFinder,
+        ViewOnGitHub,
         ToggleSplitDiff,
         ToggleWhitespace,
         Dismiss,
@@ -64,6 +65,8 @@ pub fn register(cx: &mut App) {
         KeyBinding::new("cmd-shift-a", OpenInEditor, None),
         KeyBinding::new("ctrl-`", OpenInTerminal, None),
         KeyBinding::new("cmd-shift-f", ShowInFinder, None),
+        // GitHub Desktop's own binding for Repository → View on GitHub.
+        KeyBinding::new("cmd-shift-g", ViewOnGitHub, None),
         KeyBinding::new("cmd-shift-d", ToggleSplitDiff, None),
         KeyBinding::new("escape", Dismiss, None),
     ]);
@@ -105,6 +108,8 @@ pub fn register(cx: &mut App) {
             MenuItem::action("Open in Editor", OpenInEditor),
             MenuItem::action("Open in Terminal", OpenInTerminal),
             MenuItem::action("Show in Finder", ShowInFinder),
+            MenuItem::separator(),
+            MenuItem::action("View on GitHub", ViewOnGitHub),
             MenuItem::separator(),
             MenuItem::action("Refresh", Refresh),
         ]),

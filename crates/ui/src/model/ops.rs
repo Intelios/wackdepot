@@ -13,6 +13,7 @@ use wackdepot_core::stash::StashAction;
 use wackdepot_core::status::Operation;
 use wackdepot_core::{branch, commit, merge, stage, stash, status, sync};
 
+use super::web::GitHubTarget;
 use super::{Beat, Bucket, BusyOp, ConfirmAction, Done, NoticeKind, RepoModel, Tab};
 
 fn sink_progress(
@@ -625,6 +626,19 @@ impl RepoModel {
             && std::process::Command::new("open").arg(p).spawn().is_err()
         {
             self.notice("Couldn't open Finder.", NoticeKind::Error, cx);
+        }
+    }
+
+    /// Open the repository, a branch or a commit on its GitHub page — the
+    /// `github.com` URL the snapshot resolved from the remotes.
+    pub fn open_on_github(&mut self, target: GitHubTarget, cx: &mut Context<Self>) {
+        match &self.snap.github {
+            Some(base) => cx.open_url(&target.url(base)),
+            None => self.notice(
+                "This repository isn't hosted on GitHub.",
+                NoticeKind::Info,
+                cx,
+            ),
         }
     }
 

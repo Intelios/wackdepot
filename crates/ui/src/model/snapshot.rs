@@ -25,6 +25,9 @@ pub struct Snapshot {
     pub identity: Option<(String, String)>,
     /// The tip commit is unpushed (Undo is safe to offer).
     pub tip_unpushed: bool,
+    /// `https://github.com/owner/name` when a remote is hosted there —
+    /// the base for every "View on GitHub" link.
+    pub github: Option<String>,
 }
 
 impl Snapshot {
@@ -43,6 +46,7 @@ impl Snapshot {
             stats,
             identity: commit::author(repo).ok(),
             tip_unpushed: commit::tip_is_unpushed(repo).unwrap_or(false),
+            github: super::web::repository_url(repo),
             status: Some(status),
         })
     }
