@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use gpui::{App, Context, EventEmitter};
 use wackdepot_core::diff::DiffOptions;
 use wackdepot_core::progress::Progress;
+use wackdepot_core::status;
 
 use crate::app::prefs;
 use crate::watcher::{self, RepoWatcher};
@@ -237,6 +238,34 @@ impl RepoModel {
             },
             None => String::new(),
         }
+    }
+
+    /// Why merging can't start right now, as a user-facing sentence —
+    /// `None` when the merge dialog may open.
+    pub fn merge_blocker(&self) -> Option<String> {
+        if self.repo.is_none() {
+            return Some("Open a repository first.".into());
+        }
+        let Some(s) = self.snap.status.as_ref() else {
+            return Some("Still loading this repository.".into());
+        };
+        if let Some(op) = s.operation {
+            let what = match op {
+                status::Operation::Merge => "merge",
+                status::Operation::Rebase => "rebase",
+                status::Operation::CherryPick => "cherry-pick",
+                status::Operation::Revert => "revert",
+                status::Operation::Squash => "squash",
+            };
+            return Some(format!("Finish the in-progress {what} first."));
+        }
+        if self.snap.log.is_empty() {
+            return Some("This branch has no commits to merge onto yet.".into());
+        }
+        if self.busy.is_some() {
+            return Some("Wait for the current operation to finish.".into());
+        }
+        None
     }
 
     // ── Repo lifecycle ─────────────────────────────────────────────────
@@ -502,6 +531,7 @@ impl RepoModel {
         self.snap = Arc::new(Snapshot {
             status: Some(next),
             branches: prev.branches.clone(),
+            remote_branches: prev.remote_branches.clone(),
             log: prev.log.clone(),
             graph: prev.graph.clone(),
             stashes: prev.stashes.clone(),

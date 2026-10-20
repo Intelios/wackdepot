@@ -2,16 +2,20 @@
 //! branch, tag a commit, branch from a commit). Each owns its fields;
 //! Enter submits, Esc (the app's Dismiss) cancels.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use gpui::{
     App, AppContext as _, Context, Entity, FontWeight, IntoElement, ParentElement, Render,
     SharedString, Styled, WeakEntity, Window, div, prelude::*, px,
 };
+use wackdepot_core::merge::{MergeMethod, MergePreview};
 
 use crate::app::overlays::Overlays;
 use crate::components::button::button;
 use crate::components::mark::accent_mark;
+use crate::components::menu::{menu_heading, menu_row};
+use crate::components::pill_track::pill_track;
 use crate::components::text_input::{TextInput, TextInputEvent};
 use crate::model::RepoModel;
 use crate::theme::{ActiveTheme, metrics};
@@ -561,6 +565,332 @@ impl Render for NameDialog {
                 self.message
                     .as_ref()
                     .map(|m| field("Message", m, None, window, cx)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(cancel)
+                    .child(go),
+            )
+    }
+}
+
+// ── Merge ─────────────────────────────────────────────────────────────
+
+/// Pick a branch to merge (or squash) into the current one. Rows get a
+/// `N commits` / `up to date` / conflict note as `merge_preview` answers
+/// arrive — computed in one background pass at open.
+pub struct MergeDialog {
+    model: Entity<RepoModel>,
+    overlays: WeakEntity<Overlays>,
+    filter: Entity<TextInput>,
+    /// The picked source, if any.
+    selected: Option<String>,
+    method: MergeMethod,
+    /// Per-source preview, filled in the background after open.
+    previews: HashMap<String, MergePreview>,
+}
+
+impl MergeDialog {
+    pub fn new(
+        model: Entity<RepoModel>,
+        overlays: WeakEntity<Overlays>,
+        preselect: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let filter = cx.new(|cx| TextInput::new("Filter branches", cx));
+        cx.subscribe(&filter, |this: &mut Self, _, e: &TextInputEvent, cx| {
+            if *e == TextInputEvent::Submit {
+                this.go(cx);
+            }
+            cx.notify();
+        })
+        .detach();
+        filter.update(cx, |i, cx| i.focus(window, cx));
+        if let Some(repo) = model.read(cx).repo.clone() {
+            let names = {
+                let m = model.read(cx);
+                m.snap
+                    .branches
+                    .iter()
+                    .map(|b| b.name.clone())
+                    .chain(m.snap.remote_branches.iter().cloned())
+                    .collect::<Vec<_>>()
+            };
+            cx.spawn(async move |this, cx| {
+                let previews = cx
+                    .background_executor()
+                    .spawn(async move {
+                        names
+                            .iter()
+                            .map(|n| (n.clone(), wackdepot_core::merge::merge_preview(&repo, n)))
+                            .collect::<HashMap<_, _>>()
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.previews = previews;
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        Self {
+            model,
+            overlays,
+            filter,
+            selected: preselect,
+            method: MergeMethod::Commit,
+            previews: HashMap::new(),
+        }
+    }
+
+    /// Every merge source after the filter: local branches, then remotes.
+    fn visible(&self, cx: &App) -> (Vec<String>, Vec<String>) {
+        let model = self.model.read(cx);
+        let filter = self.filter.read(cx).content().to_lowercase();
+        let current = model.snap.status.as_ref().and_then(|s| s.branch.clone());
+        let keep = |name: &String| {
+            Some(name) != current.as_ref()
+                && (filter.is_empty() || name.to_lowercase().contains(&filter))
+        };
+        let local = model
+            .snap
+            .branches
+            .iter()
+            .map(|b| b.name.clone())
+            .filter(keep)
+            .collect();
+        let remote = model
+            .snap
+            .remote_branches
+            .iter()
+            .filter(|n| keep(n))
+            .cloned()
+            .collect();
+        (local, remote)
+    }
+
+    /// A source can be merged once its preview says it brings commits;
+    /// before previews land everything counts as mergeable.
+    fn enabled(&self, name: &str) -> bool {
+        self.previews.get(name).is_none_or(|p| p.incoming > 0)
+    }
+
+    /// The explicit pick, else the first mergeable row in view.
+    fn chosen(&self, cx: &App) -> Option<String> {
+        if let Some(name) = &self.selected
+            && self.enabled(name)
+        {
+            return Some(name.clone());
+        }
+        let (local, remote) = self.visible(cx);
+        local.into_iter().chain(remote).find(|n| self.enabled(n))
+    }
+
+    fn go(&mut self, cx: &mut Context<Self>) {
+        let Some(name) = self.chosen(cx) else {
+            return;
+        };
+        self.model
+            .update(cx, |m, cx| m.merge_branch(name, self.method, cx));
+        if let Some(o) = self.overlays.upgrade() {
+            o.update(cx, |o, cx| o.close(cx));
+        }
+    }
+
+    fn source_row(
+        &self,
+        i: usize,
+        name: &str,
+        remote: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let preview = self.previews.get(name);
+        let stale = preview.is_some_and(|p| p.incoming == 0);
+        let conflicts = preview.and_then(|p| p.conflicts.as_ref()).cloned();
+        let incoming = preview.map(|p| p.incoming).unwrap_or(0);
+        let mut row = menu_row(("merge-src", i), name.to_string())
+            .mono()
+            .icon(if remote { "cloud" } else { "branch" })
+            .selected(self.selected.as_deref() == Some(name));
+        if stale {
+            row = row.hint("up to date").disabled(true);
+        } else {
+            if conflicts.as_ref().is_some_and(|c| !c.is_empty()) {
+                let n = conflicts.as_ref().map(|c| c.len()).unwrap_or(0);
+                row = row.trailing(
+                    div()
+                        .flex_none()
+                        .text_size(px(11.))
+                        .text_color(t.sem.warning)
+                        .child(format!("{n} conflict{}", if n == 1 { "" } else { "s" })),
+                );
+            } else if preview.is_some() {
+                row = row.hint(format!(
+                    "{incoming} commit{}",
+                    if incoming == 1 { "" } else { "s" }
+                ));
+            }
+            let e = cx.entity();
+            let name = name.to_string();
+            row = row.on_click(move |_, _, cx| {
+                e.update(cx, |d: &mut Self, cx| {
+                    d.selected = Some(name.clone());
+                    cx.notify();
+                })
+            });
+        }
+        row
+    }
+}
+
+impl Render for MergeDialog {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let current = self.model.read(cx).branch_label();
+        let (local, remote) = self.visible(cx);
+        let mut rows = Vec::new();
+        let mut i = 0usize;
+        if !local.is_empty() {
+            rows.push(menu_heading("Local branches", cx).into_any_element());
+            for name in &local {
+                rows.push(self.source_row(i, name, false, cx).into_any_element());
+                i += 1;
+            }
+        }
+        if !remote.is_empty() {
+            rows.push(menu_heading("Remote branches", cx).into_any_element());
+            for name in &remote {
+                rows.push(self.source_row(i, name, true, cx).into_any_element());
+                i += 1;
+            }
+        }
+        if rows.is_empty() {
+            rows.push(
+                div()
+                    .px(px(9.))
+                    .py(px(10.))
+                    .text_size(px(12.5))
+                    .text_color(t.text_dim)
+                    .child("No branches match.")
+                    .into_any_element(),
+            );
+        }
+
+        let verb = match self.method {
+            MergeMethod::Commit => "Merge",
+            MergeMethod::Squash => "Squash",
+        };
+        let (status_text, status_color) = match self.selected.clone() {
+            None => (
+                "Pick a branch — the row tells you what merging it would do.".to_string(),
+                t.text_faint,
+            ),
+            Some(name) => match self.previews.get(&name) {
+                None => (format!("Checking {name}…"), t.text_faint),
+                Some(p) if p.conflicts.as_ref().is_some_and(|c| !c.is_empty()) => {
+                    let files = p.conflicts.as_deref().unwrap_or(&[]);
+                    let shown = files.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                    let more = files.len().saturating_sub(3);
+                    (
+                        format!(
+                            "{verb}ing {name} would conflict in {shown}{}.",
+                            if more > 0 {
+                                format!(" + {more} more")
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        t.sem.warning,
+                    )
+                }
+                Some(p) => (
+                    format!(
+                        "{verb}ing {} commit{} from {name} into {current} — no conflicts expected.",
+                        p.incoming,
+                        if p.incoming == 1 { "" } else { "s" },
+                    ),
+                    t.text_dim,
+                ),
+            },
+        };
+
+        let entity = cx.entity();
+        let cancel = {
+            let o = self.overlays.clone();
+            button("merge-cancel", "Cancel").on_click(move |_, _, cx| {
+                if let Some(o) = o.upgrade() {
+                    o.update(cx, |o, cx| o.close(cx));
+                }
+            })
+        };
+        let can_go = self.chosen(cx).is_some();
+        let go = button("merge-go", format!("{verb} into {current}"))
+            .primary()
+            .icon("merge")
+            .disabled(!can_go)
+            .on_click(move |_, _, cx| entity.update(cx, |d, cx| d.go(cx)));
+        let e = cx.entity();
+        let method_track = pill_track("merge-method")
+            .item("Merge")
+            .item("Squash")
+            .selected(match self.method {
+                MergeMethod::Commit => 0,
+                MergeMethod::Squash => 1,
+            })
+            .on_select(move |i, _, cx| {
+                e.update(cx, |d, cx| {
+                    d.method = if i == 1 {
+                        MergeMethod::Squash
+                    } else {
+                        MergeMethod::Commit
+                    };
+                    cx.notify();
+                })
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(head(
+                "merge",
+                &format!("Merge into {current}"),
+                "Choose a branch to bring into this one.",
+                cx,
+            ))
+            .child(field("From", &self.filter, None, window, cx))
+            .child(
+                div()
+                    .id("merge-list")
+                    .max_h(px(260.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .children(rows),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(method_track)
+                    .child(div().text_size(px(11.)).text_color(t.text_faint).child(
+                        match self.method {
+                            MergeMethod::Commit => "A merge commit joins the histories.",
+                            MergeMethod::Squash => "Their changes land staged as one commit.",
+                        },
+                    )),
+            )
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(status_color)
+                    .child(status_text),
             )
             .child(
                 div()

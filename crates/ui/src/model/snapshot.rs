@@ -13,6 +13,8 @@ pub const LOG_LIMIT: usize = 400;
 pub struct Snapshot {
     pub status: Option<status::RepoStatus>,
     pub branches: Vec<branch::BranchInfo>,
+    /// Remote-tracking refs (`origin/main`…) — merge sources.
+    pub remote_branches: Vec<String>,
     pub log: Vec<commit::LogEntry>,
     pub graph: Vec<graph::GraphRow>,
     pub stashes: Vec<stash::StashEntry>,
@@ -35,6 +37,7 @@ impl Snapshot {
             graph: graph::layout(&log),
             log,
             branches: branch::list_branches(repo).unwrap_or_default(),
+            remote_branches: branch::remote_branches(repo).unwrap_or_default(),
             stashes: stash::stash_list(repo).unwrap_or_default(),
             unpushed: commit::unpushed_shas(repo).unwrap_or_default(),
             stats,

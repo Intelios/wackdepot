@@ -479,6 +479,16 @@ impl Render for Workspace {
             .on_action(cx.listener(|ws, _: &NewBranch, window, cx| {
                 ws.titlebar.update(cx, |t, cx| t.new_branch(window, cx))
             }))
+            .on_action(cx.listener(|ws, _: &MergeIntoCurrent, window, cx| {
+                if let Some(reason) = ws.model.read(cx).merge_blocker() {
+                    ws.model.update(cx, |m, cx| {
+                        m.notice(reason, crate::model::NoticeKind::Error, cx)
+                    });
+                } else {
+                    ws.overlays
+                        .update(cx, |o, cx| o.open_merge(None, window, cx));
+                }
+            }))
             .on_action(cx.listener(|ws, _: &Fetch, _, cx| ws.model.update(cx, |m, cx| m.fetch(cx))))
             .on_action(cx.listener(|ws, _: &Pull, _, cx| ws.model.update(cx, |m, cx| m.pull(cx))))
             .on_action(cx.listener(|ws, _: &Push, _, cx| ws.model.update(cx, |m, cx| m.push(cx))))

@@ -45,6 +45,20 @@ fn parse_branches(text: &str) -> Vec<BranchInfo> {
         .collect()
 }
 
+/// Remote-tracking branches (`git branch -r`): `origin/main` & friends.
+/// Symbolic tips like `origin/HEAD` are excluded — they're aliases, not
+/// branches you'd merge. Names only; used for merge sources.
+pub fn remote_branches(repo: &Path) -> Result<Vec<String>, String> {
+    let out = Git::new(repo).run(["branch", "-r", "--format=%(refname:short)"])?;
+    Ok(out
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.ends_with("/HEAD"))
+        .map(str::to_string)
+        .collect())
+}
+
 /// The current branch name, or `None` when `HEAD` is detached.
 pub fn current_branch(repo: &Path) -> Result<Option<String>, String> {
     let out = Git::new(repo).try_run(["symbolic-ref", "--short", "-q", "HEAD"])?;
@@ -145,6 +159,28 @@ mod tests {
         checkout(dir.path(), "main").unwrap();
         delete_branch(dir.path(), "feature", false).unwrap();
         assert_eq!(list_branches(dir.path()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn remote_branches_lists_tracking_refs() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "a.txt", "1\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "init", "").unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let remote = scratch.path().join("r.git");
+        g.run(["init", "--bare", "-b", "main", remote.to_str().unwrap()])
+            .unwrap();
+        g.run(["remote", "add", "origin", remote.to_str().unwrap()])
+            .unwrap();
+        g.run(["push", "-u", "origin", "HEAD"]).unwrap();
+        let names = remote_branches(dir.path()).unwrap();
+        assert!(names.contains(&"origin/main".to_string()));
+        assert!(!names.iter().any(|n| n.ends_with("/HEAD")));
+
+        // No remotes at all → empty, not an error.
+        let (solo, _g) = temp_repo();
+        assert!(remote_branches(solo.path()).unwrap().is_empty());
     }
 
     #[test]

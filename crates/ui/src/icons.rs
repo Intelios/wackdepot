@@ -24,6 +24,10 @@ static ICONS: &[(&str, &str)] = &[
         r#"<circle cx="7" cy="5" r="2"/><circle cx="7" cy="19" r="2"/><circle cx="17" cy="8" r="2"/><path d="M7 7v10M9 15c4 0 6-2 6-5"/>"#,
     ),
     (
+        "merge",
+        r#"<circle cx="6" cy="6" r="2"/><circle cx="12" cy="19" r="2"/><circle cx="18" cy="6" r="2"/><path d="M6 9v3a4.5 4.5 0 0 0 4.5 4.5"/><path d="M18 9v3a4.5 4.5 0 0 1-4.5 4.5"/>"#,
+    ),
+    (
         "commit",
         r#"<circle cx="12" cy="12" r="3.5"/><path d="M3.5 12h5M15.5 12h5"/>"#,
     ),

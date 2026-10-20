@@ -7,10 +7,11 @@ use std::path::PathBuf;
 use gpui::Context;
 use wackdepot_core::commit::{CommitOptions, PickOutcome};
 use wackdepot_core::diff::{FileDiff, Hunk};
+use wackdepot_core::merge::{MergeMethod, MergeOutcome};
 use wackdepot_core::stage::LineSel;
 use wackdepot_core::stash::StashAction;
 use wackdepot_core::status::Operation;
-use wackdepot_core::{branch, commit, stage, stash, status, sync};
+use wackdepot_core::{branch, commit, merge, stage, stash, status, sync};
 
 use super::{Beat, Bucket, BusyOp, ConfirmAction, Done, NoticeKind, RepoModel};
 
@@ -194,6 +195,42 @@ impl RepoModel {
                 PickOutcome::Conflicts => Ok(Done::toast(
                     "The cherry-pick hit conflicts. Resolve them, then continue.",
                 )),
+            },
+            cx,
+        );
+    }
+
+    /// `git merge [--squash] <name>` into the current branch. Conflicts
+    /// don't fail: they leave the repo mid-operation, which the sidebar
+    /// banner picks up on the next snapshot.
+    pub fn merge_branch(&mut self, name: String, method: MergeMethod, cx: &mut Context<Self>) {
+        self.run(
+            BusyOp::Other(match method {
+                MergeMethod::Commit => "Merging",
+                MergeMethod::Squash => "Squashing",
+            }),
+            move |r, _| {
+                let current = branch::current_branch(r)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "HEAD".to_string());
+                let toast = match merge::merge(r, &name, method)? {
+                    MergeOutcome::FastForward => format!("Fast-forwarded {current} to {name}."),
+                    MergeOutcome::Merged => format!("Merged {name} into {current}."),
+                    MergeOutcome::AlreadyUpToDate => {
+                        format!("{current} already has all of {name}.")
+                    }
+                    MergeOutcome::Conflicts => {
+                        format!("Merging {name} hit conflicts — resolve them in the list.")
+                    }
+                    MergeOutcome::SquashedClean => {
+                        format!("Squashed {name} — the changes are staged, ready to commit.")
+                    }
+                    MergeOutcome::SquashedConflicts => {
+                        format!("Squashing {name} hit conflicts — resolve them in the list.")
+                    }
+                };
+                Ok(Done::toast(toast))
             },
             cx,
         );

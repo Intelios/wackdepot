@@ -82,9 +82,11 @@ pub struct RepoStatus {
     /// Commit OID when `HEAD` is detached (`branch` is `None` then).
     pub detached_at: Option<String>,
     /// `.git/MERGE_HEAD` exists — a merge is waiting on resolution/commit.
+    /// Squash merges don't write `MERGE_HEAD`; they show as
+    /// [`Operation::Squash`] in `operation` instead.
     pub merge_in_progress: bool,
     /// The multi-step operation waiting on the user, if any (merge, rebase,
-    /// cherry-pick, revert) — drives the banner above the changes list.
+    /// cherry-pick, revert, squash) — drives the banner above the changes list.
     pub operation: Option<Operation>,
     /// Unmerged paths from a merge in progress.
     pub conflicted: Vec<FileChange>,
@@ -111,6 +113,11 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     ])?;
     let mut s = parse_status_porcelain(&out.stdout);
     s.operation = operation(repo);
+    if s.operation == Some(Operation::Squash) && s.conflicted.is_empty() && s.staged.is_empty() {
+        // SQUASH_MSG outlives `git reset --hard`; with nothing staged and no
+        // conflicts there is no squash to continue, so don't wear the banner.
+        s.operation = None;
+    }
     s.merge_in_progress = s.operation == Some(Operation::Merge);
     Ok(s)
 }
@@ -122,22 +129,15 @@ pub enum Operation {
     Rebase,
     CherryPick,
     Revert,
-}
-
-impl Operation {
-    /// The git subcommand that continues or aborts it.
-    fn command(self) -> &'static str {
-        match self {
-            Self::Merge => "merge",
-            Self::Rebase => "rebase",
-            Self::CherryPick => "cherry-pick",
-            Self::Revert => "revert",
-        }
-    }
+    /// `git merge --squash` staged its changes (or hit conflicts): git
+    /// writes `SQUASH_MSG` but never `MERGE_HEAD`, so abort/continue take
+    /// different commands than a real merge.
+    Squash,
 }
 
 /// Which operation, if any, is in progress — read from the marker files git
-/// leaves in the git dir.
+/// leaves in the git dir. `SQUASH_MSG` alone can be stale after a hard
+/// reset; [`status`] clears a phantom squash that left nothing staged.
 pub fn operation(repo: &Path) -> Option<Operation> {
     let dir = git_dir(repo)?;
     if dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists() {
@@ -148,26 +148,56 @@ pub fn operation(repo: &Path) -> Option<Operation> {
         Some(Operation::CherryPick)
     } else if dir.join("REVERT_HEAD").exists() {
         Some(Operation::Revert)
+    } else if dir.join("SQUASH_MSG").exists() {
+        Some(Operation::Squash)
     } else {
         None
     }
 }
 
-/// `git <op> --abort` — back to where things were before it started.
+/// `git <op> --abort` — back to where things were before it started. A
+/// squash has no `MERGE_HEAD`, so `merge --abort` can't see it;
+/// `reset --merge` restores conflicted paths and drops `SQUASH_MSG`.
 pub fn abort_operation(repo: &Path, op: Operation) -> Result<(), String> {
-    Git::new(repo).run([op.command(), "--abort"])?;
+    let g = Git::new(repo);
+    match op {
+        Operation::Squash => {
+            g.run(["reset", "--merge"])?;
+        }
+        _ => {
+            let cmd = match op {
+                Operation::Merge => "merge",
+                Operation::Rebase => "rebase",
+                Operation::CherryPick => "cherry-pick",
+                Operation::Revert => "revert",
+                Operation::Squash => unreachable!(),
+            };
+            g.run([cmd, "--abort"])?;
+        }
+    }
     Ok(())
 }
 
-/// `git <op> --continue` once conflicts are resolved and staged. The editor
-/// is pinned to `true` so git keeps its prepared message instead of opening
+/// `git <op> --continue` once conflicts are resolved and staged. Merges and
+/// squashes continue as an ordinary `git commit` (there's no
+/// `merge --continue`); `--no-edit` keeps git's prepared `MERGE_MSG` /
+/// `SQUASH_MSG`. The editor is pinned to `true` anyway so nothing can open
 /// one (there's no tty in a GUI).
 pub fn continue_operation(repo: &Path, op: Operation) -> Result<(), String> {
     let g = Git::new(repo);
-    if op == Operation::Merge {
-        g.run(["-c", "core.editor=true", "commit", "--no-edit"])?;
-    } else {
-        g.run(["-c", "core.editor=true", op.command(), "--continue"])?;
+    match op {
+        Operation::Merge | Operation::Squash => {
+            g.run(["-c", "core.editor=true", "commit", "--no-edit"])?;
+        }
+        _ => {
+            let cmd = match op {
+                Operation::Rebase => "rebase",
+                Operation::CherryPick => "cherry-pick",
+                Operation::Revert => "revert",
+                Operation::Merge | Operation::Squash => unreachable!(),
+            };
+            g.run(["-c", "core.editor=true", cmd, "--continue"])?;
+        }
     }
     Ok(())
 }

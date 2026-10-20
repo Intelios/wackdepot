@@ -19,6 +19,7 @@ actions!(
         ShowRepositories,
         ShowBranches,
         NewBranch,
+        MergeIntoCurrent,
         Fetch,
         Pull,
         Push,
@@ -110,6 +111,7 @@ pub fn register(cx: &mut App) {
         Menu::new("Branch").items([
             MenuItem::action("New Branch…", NewBranch),
             MenuItem::action("Switch Branch…", ShowBranches),
+            MenuItem::action("Merge into Current Branch…", MergeIntoCurrent),
             MenuItem::separator(),
             MenuItem::action("Commit", Commit),
         ]),

@@ -19,7 +19,7 @@ use crate::components::pill_track::pill_track;
 use crate::components::spinner::orbit;
 use crate::components::text_input::{TextInput, TextInputEvent};
 use crate::icons::icon;
-use crate::model::{Beat, ConfirmAction, RepoEvent, RepoModel};
+use crate::model::{Beat, ConfirmAction, NoticeKind, RepoEvent, RepoModel};
 use crate::motion::{GLIDE, Motion};
 use crate::theme::{ActiveTheme, metrics};
 use crate::views::dialogs::NameKind;
@@ -608,6 +608,21 @@ impl TitlebarView {
         }
         let filter = self.branch_filter.read(cx).content().to_lowercase();
         let branches = self.model.read(cx).snap.branches.clone();
+        // Merging needs a quiet lane: no op in flight and commits to land on.
+        // A plain fn so every on_click closure can copy it freely.
+        fn merge_guard(
+            preselect: Option<String>,
+            window: &mut Window,
+            cx: &mut gpui::App,
+            model: &Entity<RepoModel>,
+            overlays: &Entity<Overlays>,
+        ) {
+            if let Some(reason) = model.read(cx).merge_blocker() {
+                model.update(cx, |m, cx| m.notice(reason, NoticeKind::Error, cx));
+            } else {
+                overlays.update(cx, |o, cx| o.open_merge(preselect, window, cx));
+            }
+        }
         let mut rows = Vec::new();
         for (i, b) in branches.iter().enumerate() {
             if !filter.is_empty() && !b.name.to_lowercase().contains(&filter) {
@@ -649,6 +664,15 @@ impl TitlebarView {
                 .group_hover("branch-row", |s| s.opacity(1.))
                 .child(rename);
             if !b.is_current {
+                let (o, m, n, c) = (overlays.clone(), model.clone(), name.clone(), this.clone());
+                actions = actions.child(icon_button(("merge", i), "merge").small().on_click(
+                    move |_, window, cx| {
+                        merge_guard(Some(n.clone()), window, cx, &m, &o);
+                        if let Some(t) = c.upgrade() {
+                            t.update(cx, |t, cx| t.close(cx));
+                        }
+                    },
+                ));
                 let (o, n, c) = (overlays.clone(), name.clone(), this.clone());
                 actions = actions.child(icon_button(("delete", i), "trash").small().on_click(
                     move |_, _, cx| {
@@ -733,6 +757,19 @@ impl TitlebarView {
                     )
                     .child(create),
             )
+            .child(menu_separator(cx))
+            .child({
+                let (o, m, c) = (overlays.clone(), model.clone(), this.clone());
+                let label = format!("Merge into {}…", self.model.read(cx).branch_label());
+                menu_row("branch-merge", label)
+                    .icon("merge")
+                    .on_click(move |_, window, cx| {
+                        merge_guard(None, window, cx, &m, &o);
+                        if let Some(t) = c.upgrade() {
+                            t.update(cx, |t, cx| t.close(cx));
+                        }
+                    })
+            })
             .child(
                 div()
                     .px(px(10.))

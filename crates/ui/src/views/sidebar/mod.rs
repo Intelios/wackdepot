@@ -144,12 +144,14 @@ impl SidebarView {
             Operation::Rebase => "rebase",
             Operation::CherryPick => "cherry-pick",
             Operation::Revert => "revert",
+            Operation::Squash => "squash",
         };
         let title = match op {
             Operation::Merge => "Merging",
             Operation::Rebase => "Rebasing",
             Operation::CherryPick => "Cherry-picking",
             Operation::Revert => "Reverting",
+            Operation::Squash => "Squashing",
         };
         let body = if conflicts > 0 {
             format!(
@@ -157,6 +159,8 @@ impl SidebarView {
                 if conflicts == 1 { "" } else { "s" },
                 if conflicts == 1 { "it" } else { "them" }
             )
+        } else if op == Operation::Squash {
+            "Changes are staged — continue to commit them.".to_string()
         } else {
             "Everything's resolved — continue when you're ready.".to_string()
         };

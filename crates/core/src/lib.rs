@@ -18,6 +18,7 @@
 //!   stage/unstage/discard/trash, conflict resolution.
 //! - [`commit`] — committing, safe undo, author identity, `list_log`.
 //! - [`branch`] — list/create/checkout/delete branches.
+//! - [`merge`] — `git merge` / `--squash` and `merge-tree` conflict previews.
 //! - [`sync`] — fetch/pull/push/clone, repo creation.
 //! - [`stash`] — stash list/push/apply/pop/drop.
 //! - [`repo`] — repo discovery (`is_repo`, `repo_root`), `git_version`.
@@ -34,6 +35,7 @@ pub mod config;
 pub mod diff;
 mod git;
 pub mod graph;
+pub mod merge;
 pub mod progress;
 pub mod remote;
 pub mod repo;

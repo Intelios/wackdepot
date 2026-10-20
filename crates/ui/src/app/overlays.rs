@@ -17,7 +17,7 @@ use crate::icons::icon;
 use crate::model::{ConfirmAction, Notice, NoticeAction, NoticeKind, RepoModel};
 use crate::motion::{EASE, Motion, POP, id as mid};
 use crate::theme::{ActiveTheme, metrics};
-use crate::views::dialogs::{CloneDialog, NameDialog, NameKind, NewRepoDialog};
+use crate::views::dialogs::{CloneDialog, MergeDialog, NameDialog, NameKind, NewRepoDialog};
 
 /// A discard waiting on its confirm, carrying the diff it applies to.
 pub enum Pending {
@@ -34,6 +34,7 @@ pub enum Dialog {
     Clone(Entity<CloneDialog>),
     NewRepo(Entity<NewRepoDialog>),
     Name(Entity<NameDialog>),
+    Merge(Entity<MergeDialog>),
 }
 
 pub struct TaskConfirmation {
@@ -108,6 +109,20 @@ impl Overlays {
         let this = cx.entity().downgrade();
         let d = cx.new(|cx| NameDialog::new(kind, model, this, window, cx));
         self.dialog = Some(Dialog::Name(d));
+        cx.notify();
+    }
+
+    /// The merge dialog, optionally with a branch already picked.
+    pub fn open_merge(
+        &mut self,
+        preselect: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let model = self.model.clone();
+        let this = cx.entity().downgrade();
+        let d = cx.new(|cx| MergeDialog::new(model, this, preselect, window, cx));
+        self.dialog = Some(Dialog::Merge(d));
         cx.notify();
     }
 
@@ -399,6 +414,7 @@ impl Render for Overlays {
                 Dialog::Clone(d) => d.clone().into_any_element(),
                 Dialog::NewRepo(d) => d.clone().into_any_element(),
                 Dialog::Name(d) => d.clone().into_any_element(),
+                Dialog::Merge(d) => d.clone().into_any_element(),
             };
             let card = div()
                 .id("dialog-card")
