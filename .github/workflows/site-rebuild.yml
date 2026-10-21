@@ -1,0 +1,34 @@
+# Add this workflow to each app repo (e.g. .github/workflows/site-rebuild.yml)
+# so publishing a release rebuilds intelios.github.io immediately.
+#
+# Setup per app repo:
+# 1. Create a fine-grained personal access token at
+#    github.com/settings/personal-access-tokens with:
+#    - Repository access: only Intelios/Intelios.github.io
+#    - Permissions: Contents -> Read and write
+# 2. Store it as the SITE_REBUILD_TOKEN secret in the app repo
+#    (repo Settings → Secrets and variables → Actions).
+#
+# Publishing a release then sends a `repository_dispatch` event to the
+# website repo, which its deploy.yml workflow handles by rebuilding.
+
+name: Rebuild website on release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  rebuild-site:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger website rebuild
+        run: |
+          curl -fsSL -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $SITE_REBUILD_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/Intelios/Intelios.github.io/dispatches \
+            -d '{"event_type":"rebuild"}'
+        env:
+          SITE_REBUILD_TOKEN: ${{ secrets.SITE_REBUILD_TOKEN }}
