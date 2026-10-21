@@ -1,5 +1,5 @@
-//! No repository open: the mascot's stage, the three ways in, and recent
-//! repositories. Folders dropped anywhere on the window open too.
+//! No repository open: the mascot's stage, the three ways in, pinned and
+//! recent repositories. Folders dropped anywhere on the window open too.
 
 use gpui::{
     App, Entity, FontWeight, IntoElement, ParentElement, RenderOnce, Styled, Window, div,
@@ -70,15 +70,64 @@ impl RenderOnce for Welcome {
         let t = cx.theme().clone();
         let (m1, m2) = (self.model.clone(), self.model.clone());
         let (o1, o2) = (self.overlays.clone(), self.overlays.clone());
-        let recent: Vec<_> = prefs::get(cx).repos.iter().rev().take(5).cloned().collect();
-        let mut recents = div().flex().flex_col().gap(px(2.));
-        for (i, path) in recent.into_iter().enumerate() {
+        let pinned: Vec<_> = prefs::get(cx).pinned.clone();
+        let recent: Vec<_> = prefs::get(cx)
+            .repos
+            .iter()
+            .rev()
+            .filter(|p| !pinned.contains(p))
+            .take(5)
+            .cloned()
+            .collect();
+        // Pinned rows are launch-only: the pin glyph marks the group.
+        let mut pin_list = div().flex().flex_col().gap(px(2.));
+        for (i, path) in pinned.iter().enumerate() {
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let shown = path.display().to_string();
             let m = m2.clone();
+            let p = path.clone();
+            pin_list = pin_list.child(
+                div()
+                    .id(("pinned", i))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .h(px(36.))
+                    .px(px(10.))
+                    .rounded_full()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.hover()))
+                    .on_click(move |_, _, cx| m.update(cx, |m, cx| m.open(p.clone(), cx)))
+                    .child(monogram(name.clone()).size(22.))
+                    .child(div().text_size(px(metrics::TEXT_ROW)).child(name))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(11.5))
+                            .text_color(t.text_faint)
+                            .child(shown),
+                    )
+                    .child(
+                        crate::icons::icon("pin-filled")
+                            .size(px(11.))
+                            .text_color(t.text_dim),
+                    ),
+            );
+        }
+        let mut recents = div().flex().flex_col().gap(px(2.));
+        for (i, path) in recent.iter().enumerate() {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let shown = path.display().to_string();
+            let m = m2.clone();
+            let p = path.clone();
             recents = recents.child(
                 div()
                     .id(("recent", i))
@@ -90,7 +139,7 @@ impl RenderOnce for Welcome {
                     .rounded_full()
                     .cursor_pointer()
                     .hover(|s| s.bg(t.hover()))
-                    .on_click(move |_, _, cx| m.update(cx, |m, cx| m.open(path.clone(), cx)))
+                    .on_click(move |_, _, cx| m.update(cx, |m, cx| m.open(p.clone(), cx)))
                     .child(monogram(name.clone()).size(22.))
                     .child(div().text_size(px(metrics::TEXT_ROW)).child(name))
                     .child(
@@ -132,7 +181,19 @@ impl RenderOnce for Welcome {
                     .child(way_card("way-clone", "cloud", "Clone", "Copy one from GitHub or any URL.", "⇧⌘O", cx).on_click(move |_, window, cx| o1.update(cx, |o, cx| o.open_clone(window, cx))))
                     .child(way_card("way-new", "plus", "Create new", "Start fresh on main.", "⌘N", cx).on_click(move |_, window, cx| o2.update(cx, |o, cx| o.open_new_repo(window, cx)))),
             )
-            .when(!prefs::get(cx).repos.is_empty(), |el| {
+            .when(!pinned.is_empty(), |el| {
+                el.child(
+                    div()
+                        .w_full()
+                        .max_w(px(640.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(div().px(px(10.)).text_size(px(10.5)).font_weight(FontWeight::BOLD).text_color(t.text_faint).child("PINNED"))
+                        .child(pin_list),
+                )
+            })
+            .when(!recent.is_empty(), |el| {
                 el.child(
                     div()
                         .w_full()

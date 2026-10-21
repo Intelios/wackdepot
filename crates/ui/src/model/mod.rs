@@ -368,12 +368,7 @@ impl RepoModel {
 
     /// Forget a repo from the list (never touches its files).
     pub fn forget(&mut self, path: &Path, cx: &mut Context<Self>) {
-        prefs::update(cx, |s| {
-            s.repos.retain(|p| p != path);
-            if s.last_repo.as_deref() == Some(path) {
-                s.last_repo = None;
-            }
-        });
+        prefs::update(cx, |s| s.forget_repo(path));
         if self.repo.as_deref() == Some(path) {
             self.repo = None;
             self.snap = Arc::default();
@@ -384,6 +379,37 @@ impl RepoModel {
             self.watcher = None;
             cx.emit(RepoEvent::Opened);
         }
+        cx.notify();
+    }
+
+    /// Pin a repo to the top of the picker (newest pin first), or unpin it.
+    pub fn toggle_pin(&mut self, path: &Path, cx: &mut Context<Self>) {
+        prefs::update(cx, |s| s.toggle_pin(path));
+        cx.notify();
+    }
+
+    /// Add scanned repositories to the list — append, de-duplicated — without
+    /// switching away from the open repo.
+    pub fn add_repos(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let mut added = 0usize;
+        prefs::update(cx, |s| {
+            for p in paths {
+                if !s.repos.contains(&p) {
+                    s.repos.push(p);
+                    added += 1;
+                }
+            }
+        });
+        let n = added;
+        self.notice(
+            if n == 1 {
+                "Added 1 repository.".into()
+            } else {
+                format!("Added {n} repositories.")
+            },
+            NoticeKind::Info,
+            cx,
+        );
         cx.notify();
     }
 

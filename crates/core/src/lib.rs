@@ -23,7 +23,7 @@
 //! - [`gitignore`] — vendored .gitignore templates and .gitignore edits.
 //! - [`license`] — vendored license texts (choosealicense.com) and `LICENSE` writes.
 //! - [`stash`] — stash list/push/apply/pop/drop.
-//! - [`repo`] — repo discovery (`is_repo`, `repo_root`), `git_version`.
+//! - [`repo`] — repo discovery (`is_repo`, `repo_root`, `find_repos`), `git_version`.
 //! - [`blob`] — whole-file text for either side of a change (highlighting).
 //! - [`words`] — word-level highlights for paired changed lines.
 //! - [`graph`] — history lanes laid out from commit parents.

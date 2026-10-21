@@ -18,7 +18,7 @@ use wackdepot_core::sync::CreateOptions;
 
 use crate::app::overlays::Overlays;
 use crate::components::button::{button, icon_button};
-use crate::components::mark::{accent_mark, status_mark};
+use crate::components::mark::{Check, accent_mark, checkbox, monogram, status_mark};
 use crate::components::menu::{menu_heading, menu_row, menu_separator, popover};
 use crate::components::pill_track::pill_track;
 use crate::components::text_input::{TextInput, TextInputEvent};
@@ -1628,5 +1628,338 @@ impl Render for ConflictsDialog {
                     .children(rows),
             )
             .child(div().flex().justify_end().child(done))
+    }
+}
+
+// ── Scan ─────────────────────────────────────────────────────────────
+
+/// One repository the folder scan found, ready to tick for adding.
+struct ScanHit {
+    path: PathBuf,
+    name: String,
+    /// Where it lives (`~/GitHub/org`), shown dim beside the name.
+    rel: String,
+    already: bool,
+    checked: bool,
+}
+
+enum ScanState {
+    Scanning,
+    Found(Vec<ScanHit>),
+    Empty,
+    Failed(String),
+}
+
+/// GitHub Desktop's "Add local repositories" scan: the picked folders are
+/// walked in the background, then every repository found is listed for
+/// choosing. Already-added ones show as `Already added` and stay ticked.
+pub struct ScanDialog {
+    model: Entity<RepoModel>,
+    overlays: WeakEntity<Overlays>,
+    roots: Vec<PathBuf>,
+    state: ScanState,
+}
+
+impl ScanDialog {
+    pub fn new(
+        model: Entity<RepoModel>,
+        overlays: WeakEntity<Overlays>,
+        roots: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let scan_roots = roots.clone();
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut out: Vec<PathBuf> = Vec::new();
+                    let mut seen = std::collections::HashSet::new();
+                    for root in &scan_roots {
+                        for p in wackdepot_core::repo::find_repos(root)? {
+                            let key = std::fs::canonicalize(&p).unwrap_or(p);
+                            if seen.insert(key.clone()) {
+                                out.push(key);
+                            }
+                        }
+                    }
+                    out.sort();
+                    Ok(out)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.state = match found {
+                    Ok(paths) if paths.is_empty() => ScanState::Empty,
+                    Ok(paths) => {
+                        let known = crate::app::prefs::get(cx).repos.clone();
+                        ScanState::Found(
+                            paths
+                                .into_iter()
+                                .map(|p| {
+                                    let already = known.contains(&p);
+                                    ScanHit {
+                                        rel: tilde(p.parent().unwrap_or(&p)),
+                                        name: p
+                                            .file_name()
+                                            .map(|n| n.to_string_lossy().into_owned())
+                                            .unwrap_or_default(),
+                                        path: p,
+                                        already,
+                                        checked: !already,
+                                    }
+                                })
+                                .collect(),
+                        )
+                    }
+                    Err(e) => ScanState::Failed(e),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        Self {
+            model,
+            overlays,
+            roots,
+            state: ScanState::Scanning,
+        }
+    }
+
+    fn toggle(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let ScanState::Found(hits) = &mut self.state
+            && let Some(h) = hits.get_mut(i)
+            && !h.already
+        {
+            h.checked = !h.checked;
+        }
+        cx.notify();
+    }
+
+    /// The master checkbox: all ticked → clear the new rows, else tick them all.
+    fn toggle_all(&mut self, cx: &mut Context<Self>) {
+        if let ScanState::Found(hits) = &mut self.state {
+            let turn_on = !hits.iter().all(|h| h.already || h.checked);
+            for h in hits.iter_mut().filter(|h| !h.already) {
+                h.checked = turn_on;
+            }
+        }
+        cx.notify();
+    }
+
+    fn add_selected(&mut self, cx: &mut Context<Self>) {
+        let ScanState::Found(hits) = &self.state else {
+            return;
+        };
+        let paths: Vec<PathBuf> = hits
+            .iter()
+            .filter(|h| h.checked && !h.already)
+            .map(|h| h.path.clone())
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        self.model.update(cx, |m, cx| m.add_repos(paths, cx));
+        if let Some(o) = self.overlays.upgrade() {
+            o.update(cx, |o, cx| o.close(cx));
+        }
+    }
+
+    /// The footer's re-scan button (every state but Found).
+    fn choose_another(&self, _: &App) -> impl IntoElement {
+        let o = self.overlays.clone();
+        button("scan-choose", "Choose Another Folder…").on_click(move |_, _, cx| {
+            if let Some(o) = o.upgrade() {
+                o.update(cx, |o, cx| o.pick_scan_folders(cx));
+            }
+        })
+    }
+
+    fn hit_row(&self, i: usize, h: &ScanHit, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let entity = cx.entity();
+        let state = if h.checked { Check::On } else { Check::Off };
+        let mut row = div()
+            .id(("scan-hit", i))
+            .flex()
+            .items_center()
+            .gap(px(9.))
+            .h(px(34.))
+            .px(px(9.))
+            .rounded(px(metrics::RADIUS_MENU_ROW))
+            .child(
+                checkbox(("scan-check", i), state)
+                    .disabled(h.already)
+                    .on_click(move |_, _, cx| entity.update(cx, |d, cx| d.toggle(i, cx))),
+            )
+            .child(monogram(h.name.clone()).size(20.))
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(metrics::TEXT_ROW))
+                    .child(h.name.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(11.5))
+                    .text_color(t.text_faint)
+                    .child(h.rel.clone()),
+            );
+        if h.already {
+            row = row.child(
+                div()
+                    .flex_none()
+                    .text_size(px(11.))
+                    .text_color(t.text_faint)
+                    .child("Already added"),
+            );
+        } else {
+            let entity = cx.entity();
+            row = row
+                .cursor_pointer()
+                .hover(|s| s.bg(t.hover()))
+                .on_click(move |_, _, cx| entity.update(cx, |d, cx| d.toggle(i, cx)));
+        }
+        row
+    }
+}
+
+impl Render for ScanDialog {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let desc = if self.roots.len() == 1 {
+            tilde(&self.roots[0])
+        } else {
+            format!("{} folders", self.roots.len())
+        };
+        let body: AnyElement = match &self.state {
+            ScanState::Scanning => div()
+                .flex()
+                .items_center()
+                .gap(px(9.))
+                .px(px(9.))
+                .py(px(10.))
+                .child(crate::components::spinner::orbit("scan-spin"))
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .text_color(t.text_dim)
+                        .child(format!("Looking through {desc}…")),
+                )
+                .into_any_element(),
+            ScanState::Empty => div()
+                .px(px(9.))
+                .py(px(10.))
+                .text_size(px(12.5))
+                .text_color(t.text_dim)
+                .child(format!("No repositories found in {desc}."))
+                .into_any_element(),
+            ScanState::Failed(e) => div()
+                .px(px(9.))
+                .py(px(10.))
+                .text_size(px(12.5))
+                .text_color(t.sem.danger)
+                .child(e.clone())
+                .into_any_element(),
+            ScanState::Found(hits) => {
+                let new_rows = hits.iter().filter(|h| !h.already).count();
+                let ticked = hits.iter().filter(|h| !h.already && h.checked).count();
+                let master = if ticked == 0 {
+                    Check::Off
+                } else if ticked == new_rows {
+                    Check::On
+                } else {
+                    Check::Mixed
+                };
+                let entity = cx.entity();
+                let rows: Vec<AnyElement> = hits
+                    .iter()
+                    .enumerate()
+                    .map(|(i, h)| self.hit_row(i, h, cx).into_any_element())
+                    .collect();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(9.))
+                            .h(px(24.))
+                            .px(px(9.))
+                            .child(checkbox(("scan-all", 0usize), master).on_click(
+                                move |_, _, cx| entity.update(cx, |d, cx| d.toggle_all(cx)),
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .text_color(t.text_soft)
+                                    .child("Select all"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("scan-list")
+                            .max_h(px(300.))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap(px(1.))
+                            .children(rows),
+                    )
+                    .into_any_element()
+            }
+        };
+        let cancel = {
+            let o = self.overlays.clone();
+            button("scan-cancel", "Cancel").on_click(move |_, _, cx| {
+                if let Some(o) = o.upgrade() {
+                    o.update(cx, |o, cx| o.close(cx));
+                }
+            })
+        };
+        let footer = match &self.state {
+            ScanState::Found(hits) => {
+                let n = hits.iter().filter(|h| h.checked && !h.already).count();
+                let label = format!("Add {n} repositor{}", if n == 1 { "y" } else { "ies" });
+                let entity = cx.entity();
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(cancel)
+                    .child(
+                        button("scan-go", label)
+                            .primary()
+                            .icon("plus")
+                            .disabled(n == 0)
+                            .on_click(move |_, _, cx| {
+                                entity.update(cx, |d, cx| d.add_selected(cx))
+                            }),
+                    )
+                    .into_any_element()
+            }
+            _ => div()
+                .flex()
+                .justify_end()
+                .gap(px(8.))
+                .child(cancel)
+                .child(self.choose_another(cx))
+                .into_any_element(),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(14.))
+            .child(head(
+                "search",
+                "Add repositories",
+                &format!("Searched {desc}."),
+                cx,
+            ))
+            .child(body)
+            .child(footer)
     }
 }

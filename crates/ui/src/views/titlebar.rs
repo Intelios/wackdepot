@@ -2,6 +2,8 @@
 //! split-pill with live progress, and the more menu. Each pill owns its
 //! frosted popover.
 
+use std::path::Path;
+
 use gpui::{
     Anchor, AppContext as _, Context, Entity, FontWeight, IntoElement, ParentElement, Render,
     SharedString, Styled, Window, div, prelude::*, px,
@@ -402,53 +404,115 @@ impl TitlebarView {
             .child(div().flex_1().child(input.clone()))
     }
 
+    /// Whether a repo row survives the picker's filter (name match).
+    fn repo_matches(path: &Path, filter: &str) -> bool {
+        filter.is_empty()
+            || path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase().contains(filter))
+                .unwrap_or(false)
+    }
+
+    /// One picker row: monogram, name, and the pin/forget buttons. Pinned
+    /// rows keep their pin lit at all times; the rest reveal it on hover,
+    /// beside forget.
+    fn repo_row(
+        i: usize,
+        path: &Path,
+        is_pinned: bool,
+        is_current: bool,
+        model: &Entity<RepoModel>,
+        this: &gpui::WeakEntity<Self>,
+    ) -> gpui::AnyElement {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (m1, m2, m3) = (model.clone(), model.clone(), model.clone());
+        let (p1, p2, p3) = (path.to_path_buf(), path.to_path_buf(), path.to_path_buf());
+        let close = this.clone();
+        let forget = icon_button(("forget", i), "close")
+            .small()
+            .on_click(move |_, _, cx| {
+                m2.update(cx, |m, cx| m.forget(&p2, cx));
+            });
+        let pin = icon_button(("pin", i), if is_pinned { "pin-filled" } else { "pin" })
+            .small()
+            .lit(is_pinned)
+            .on_click(move |_, _, cx| {
+                m3.update(cx, |m, cx| m.toggle_pin(&p3, cx));
+            });
+        let mut trailing = div().flex().items_center().gap(px(2.));
+        trailing = if is_pinned {
+            trailing.child(pin)
+        } else {
+            trailing.child(
+                div()
+                    .opacity(0.)
+                    .group_hover("repo-row", |s| s.opacity(1.))
+                    .child(pin),
+            )
+        };
+        let trailing = trailing.child(
+            div()
+                .opacity(0.)
+                .group_hover("repo-row", |s| s.opacity(1.))
+                .child(forget),
+        );
+        menu_row(("repo", i), name.clone())
+            .lead(monogram(name).size(20.).current(is_current))
+            .selected(is_current)
+            .trailing(trailing)
+            .on_click(move |_, _, cx| {
+                m1.update(cx, |m, cx| m.open(p1.clone(), cx));
+                if let Some(t) = close.upgrade() {
+                    t.update(cx, |t, cx| {
+                        t.open = None;
+                        cx.notify();
+                    });
+                }
+            })
+            .into_any_element()
+    }
+
     fn repo_picker(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let filter = self.repo_filter.read(cx).content().to_lowercase();
         let current = self.model.read(cx).repo.clone();
         let repos = prefs::get(cx).repos.clone();
+        let pinned = prefs::get(cx).pinned.clone();
         let model = self.model.clone();
         let overlays = self.overlays.clone();
         let this = cx.entity().downgrade();
-        let mut rows: Vec<gpui::AnyElement> = Vec::new();
-        for (i, path) in repos.iter().enumerate() {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if !filter.is_empty() && !name.to_lowercase().contains(&filter) {
+        let mut pinned_rows: Vec<gpui::AnyElement> = Vec::new();
+        let mut rest_rows: Vec<gpui::AnyElement> = Vec::new();
+        let mut i = 0usize;
+        for path in pinned.iter() {
+            if Self::repo_matches(path, &filter) {
+                pinned_rows.push(Self::repo_row(
+                    i,
+                    path,
+                    true,
+                    current.as_ref() == Some(path),
+                    &model,
+                    &this,
+                ));
+                i += 1;
+            }
+        }
+        for path in repos.iter() {
+            if pinned.contains(path) || !Self::repo_matches(path, &filter) {
                 continue;
             }
-            let is_current = current.as_ref() == Some(path);
-            let (m1, m2) = (model.clone(), model.clone());
-            let (p1, p2) = (path.clone(), path.clone());
-            let close = this.clone();
-            let forget = icon_button(("forget", i), "close")
-                .small()
-                .on_click(move |_, _, cx| {
-                    m2.update(cx, |m, cx| m.forget(&p2, cx));
-                });
-            rows.push(
-                menu_row(("repo", i), name.clone())
-                    .lead(monogram(name).size(20.).current(is_current))
-                    .selected(is_current)
-                    .trailing(
-                        div()
-                            .opacity(0.)
-                            .group_hover("repo-row", |s| s.opacity(1.))
-                            .child(forget),
-                    )
-                    .on_click(move |_, _, cx| {
-                        m1.update(cx, |m, cx| m.open(p1.clone(), cx));
-                        if let Some(t) = close.upgrade() {
-                            t.update(cx, |t, cx| {
-                                t.open = None;
-                                cx.notify();
-                            });
-                        }
-                    })
-                    .into_any_element(),
-            );
+            rest_rows.push(Self::repo_row(
+                i,
+                path,
+                false,
+                current.as_ref() == Some(path),
+                &model,
+                &this,
+            ));
+            i += 1;
         }
         let add = {
             let (m, c) = (model.clone(), this.clone());
@@ -457,6 +521,17 @@ impl TitlebarView {
                 .trailing(kbd("⌘O", cx))
                 .on_click(move |_, _, cx| {
                     m.update(cx, |m, cx| m.add_existing(cx));
+                    if let Some(t) = c.upgrade() {
+                        t.update(cx, |t, cx| t.close(cx));
+                    }
+                })
+        };
+        let scan = {
+            let (o, c) = (overlays.clone(), this.clone());
+            menu_row("repo-scan", "Scan for repositories…")
+                .icon("search")
+                .on_click(move |_, _, cx| {
+                    o.update(cx, |o, cx| o.pick_scan_folders(cx));
                     if let Some(t) = c.upgrade() {
                         t.update(cx, |t, cx| t.close(cx));
                     }
@@ -486,12 +561,11 @@ impl TitlebarView {
                     }
                 })
         };
-        let empty = rows.is_empty();
+        let empty = pinned_rows.is_empty() && rest_rows.is_empty();
         popover("repo-popover")
             .width(320.)
             .on_dismiss(self.dismiss_handler(cx))
             .child(Self::filter_row(&self.repo_filter, cx))
-            .child(menu_heading("Repositories", cx))
             .child(
                 div()
                     .id("repo-list")
@@ -500,7 +574,20 @@ impl TitlebarView {
                     .flex()
                     .flex_col()
                     .gap(px(1.))
-                    .children(rows.into_iter().map(|r| div().group("repo-row").child(r)))
+                    .when(!pinned_rows.is_empty(), |el| {
+                        el.child(menu_heading("Pinned", cx)).children(
+                            pinned_rows
+                                .into_iter()
+                                .map(|r| div().group("repo-row").child(r)),
+                        )
+                    })
+                    .when(!rest_rows.is_empty(), |el| {
+                        el.child(menu_heading("Repositories", cx)).children(
+                            rest_rows
+                                .into_iter()
+                                .map(|r| div().group("repo-row").child(r)),
+                        )
+                    })
                     .when(empty, |el| {
                         el.child(
                             div()
@@ -514,6 +601,7 @@ impl TitlebarView {
             )
             .child(menu_separator(cx))
             .child(add)
+            .child(scan)
             .child(clone)
             .child(create)
     }

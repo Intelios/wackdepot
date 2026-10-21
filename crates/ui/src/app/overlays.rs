@@ -1,6 +1,7 @@
 //! What floats above the window: one dialog at a time (over a scrim) and a
 //! short stack of frosted toasts at the bottom centre.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
@@ -19,6 +20,7 @@ use crate::motion::{EASE, Motion, POP, id as mid};
 use crate::theme::{ActiveTheme, metrics};
 use crate::views::dialogs::{
     CloneDialog, ConflictsDialog, MergeDialog, NameDialog, NameKind, NewRepoDialog, PublishDialog,
+    ScanDialog,
 };
 
 /// A discard waiting on its confirm, carrying the diff it applies to.
@@ -39,6 +41,7 @@ pub enum Dialog {
     Name(Entity<NameDialog>),
     Merge(Entity<MergeDialog>),
     Conflicts(Entity<ConflictsDialog>),
+    Scan(Entity<ScanDialog>),
 }
 
 pub struct TaskConfirmation {
@@ -145,6 +148,35 @@ impl Overlays {
         let this = cx.entity().downgrade();
         let d = cx.new(|cx| ConflictsDialog::new(model, this, cx));
         self.dialog = Some(Dialog::Conflicts(d));
+        cx.notify();
+    }
+
+    /// Native folder picker, then the scan-results dialog for what it finds.
+    /// Re-entrant: "Choose Another Folder…" runs it again.
+    pub fn pick_scan_folders(&mut self, cx: &mut Context<Self>) {
+        let task = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: true,
+            prompt: Some("Scan".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = task.await
+                && !paths.is_empty()
+            {
+                let _ = this.update(cx, move |this, cx| this.open_scan(paths, cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Show the scan dialog for `roots` (already picked); the scan itself
+    /// runs in the background and lands in the dialog.
+    pub fn open_scan(&mut self, roots: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let model = self.model.clone();
+        let this = cx.entity().downgrade();
+        let d = cx.new(|cx| ScanDialog::new(model, this, roots, cx));
+        self.dialog = Some(Dialog::Scan(d));
         cx.notify();
     }
 
@@ -439,11 +471,15 @@ impl Render for Overlays {
                 Dialog::Name(d) => d.clone().into_any_element(),
                 Dialog::Merge(d) => d.clone().into_any_element(),
                 Dialog::Conflicts(d) => d.clone().into_any_element(),
+                Dialog::Scan(d) => d.clone().into_any_element(),
             };
             let card = div()
                 .id("dialog-card")
                 .w(px(
-                    if matches!(self.dialog.as_ref().expect("checked"), Dialog::Conflicts(_)) {
+                    if matches!(
+                        self.dialog.as_ref().expect("checked"),
+                        Dialog::Conflicts(_) | Dialog::Scan(_)
+                    ) {
                         560.
                     } else {
                         440.

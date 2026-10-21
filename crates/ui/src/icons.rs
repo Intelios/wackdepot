@@ -231,6 +231,16 @@ static ICONS: &[(&str, &str)] = &[
         "repo-add",
         r#"<path d="M3 6.5h6l2 2h10v10.5H3z"/><path d="M12 11.5v5M9.5 14h5"/>"#,
     ),
+    // The pin body is one closed path so `pin-filled` can fill the same
+    // silhouette it strokes.
+    (
+        "pin",
+        r#"<path d="M9.5 3.5h5l1.75 7h-8.5z"/><path d="M12 10.5v9.5"/>"#,
+    ),
+    (
+        "pin-filled",
+        r#"<path d="M9.5 3.5h5l1.75 7h-8.5z" fill="currentColor" stroke="none"/><path d="M12 10.5v9.5"/>"#,
+    ),
 ];
 
 /// Static asset source for the embedded icons (path "icons/<name>.svg").
