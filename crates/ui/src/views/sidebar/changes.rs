@@ -654,6 +654,30 @@ impl SidebarView {
                             }),
                     );
                 }
+                if bucket == Bucket::Untracked {
+                    // Ignoring only makes sense untracked: on a tracked
+                    // file a gitignore line silently does nothing.
+                    let (m4, m5, pf, px) = (m.clone(), m.clone(), path.clone(), path.clone());
+                    let (c6, c7) = (close.clone(), close.clone());
+                    pop = pop.child(menu_separator(cx)).child(
+                        menu_row("ctx-ignore", "Ignore file")
+                            .icon("eye-off")
+                            .on_click(move |_, _, cx| {
+                                m4.update(cx, |m, cx| m.ignore_path(pf.clone(), false, cx));
+                                c6(cx);
+                            }),
+                    );
+                    if let Some(pattern) = wackdepot_core::gitignore::extension_pattern(&px) {
+                        let label = format!("Ignore all {} files", pattern.trim_start_matches('*'));
+                        pop =
+                            pop.child(menu_row("ctx-ignore-ext", label).icon("eye-off").on_click(
+                                move |_, _, cx| {
+                                    m5.update(cx, |m, cx| m.ignore_path(px.clone(), true, cx));
+                                    c7(cx);
+                                },
+                            ));
+                    }
+                }
                 pop.child(menu_separator(cx))
                     .child(menu_row("ctx-copy", "Copy path").icon("copy").on_click(
                         move |_, _, cx| {

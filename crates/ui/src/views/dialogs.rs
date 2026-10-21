@@ -9,6 +9,7 @@ use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FontWeight, IntoElement, ParentElement,
     Render, SharedString, Styled, WeakEntity, Window, div, prelude::*, px,
 };
+use wackdepot_core::gitignore;
 use wackdepot_core::merge::{MergeMethod, MergePreview};
 use wackdepot_core::stage::ConflictSide;
 use wackdepot_core::status::FileChange;
@@ -16,7 +17,7 @@ use wackdepot_core::status::FileChange;
 use crate::app::overlays::Overlays;
 use crate::components::button::{button, icon_button};
 use crate::components::mark::{accent_mark, status_mark};
-use crate::components::menu::{menu_heading, menu_row};
+use crate::components::menu::{menu_heading, menu_row, popover};
 use crate::components::pill_track::pill_track;
 use crate::components::text_input::{TextInput, TextInputEvent};
 use crate::model::{Bucket, RepoEvent, RepoModel};
@@ -301,6 +302,10 @@ pub struct NewRepoDialog {
     overlays: WeakEntity<Overlays>,
     name: Entity<TextInput>,
     parent: Entity<TextInput>,
+    /// The picked .gitignore template's name, `None` for a bare repo.
+    gitignore: Option<String>,
+    gitignore_open: bool,
+    gitignore_filter: Entity<TextInput>,
     error: Option<SharedString>,
 }
 
@@ -327,12 +332,24 @@ impl NewRepoDialog {
             )
             .detach();
         }
+        let gitignore_filter = cx.new(|cx| TextInput::new("Filter templates", cx));
+        cx.subscribe(
+            &gitignore_filter,
+            |this: &mut Self, _, e: &TextInputEvent, cx| match e {
+                TextInputEvent::Changed => cx.notify(),
+                TextInputEvent::Submit => this.pick_first_gitignore(cx),
+            },
+        )
+        .detach();
         name.update(cx, |i, cx| i.focus(window, cx));
         Self {
             model,
             overlays,
             name,
             parent,
+            gitignore: None,
+            gitignore_open: false,
+            gitignore_filter,
             error: None,
         }
     }
@@ -355,10 +372,36 @@ impl NewRepoDialog {
             cx.notify();
             return;
         }
-        self.model.update(cx, |m, cx| m.create_repo(path, cx));
+        let template = self.gitignore.clone();
+        self.model
+            .update(cx, |m, cx| m.create_repo(path, template, cx));
         if let Some(o) = self.overlays.upgrade() {
             o.update(cx, |o, cx| o.close(cx));
         }
+    }
+
+    /// Enter in the template filter picks the top match.
+    fn pick_first_gitignore(&mut self, cx: &mut Context<Self>) {
+        let filter = self.gitignore_filter.read(cx).content().to_lowercase();
+        if filter.is_empty() {
+            return;
+        }
+        if let Some(name) = gitignore::templates().find(|n| n.to_lowercase().contains(&filter)) {
+            self.gitignore = Some(name.to_string());
+            self.gitignore_open = false;
+            cx.notify();
+        }
+    }
+
+    fn toggle_gitignore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.gitignore_open = !self.gitignore_open;
+        if self.gitignore_open {
+            self.gitignore_filter.update(cx, |i, cx| {
+                i.clear(cx);
+                i.focus(window, cx);
+            });
+        }
+        cx.notify();
     }
 
     fn choose(&mut self, cx: &mut Context<Self>) {
@@ -424,6 +467,7 @@ impl Render for NewRepoDialog {
                 window,
                 cx,
             ))
+            .child(self.gitignore_row(cx))
             .children(
                 self.error
                     .clone()
@@ -436,6 +480,173 @@ impl Render for NewRepoDialog {
                     .gap(px(8.))
                     .child(cancel)
                     .child(go),
+            )
+    }
+}
+
+impl NewRepoDialog {
+    /// The "Git ignore" row — a field lookalike that opens the template
+    /// popover. GitHub Desktop's dropdown, as a filterable frosted menu.
+    fn gitignore_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let label = match &self.gitignore {
+            Some(name) => (name.clone(), t.text),
+            None => ("None".to_string(), t.text_faint),
+        };
+        let mut row = div()
+            .id("gitignore-row")
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .h(px(36.))
+            .px(px(12.))
+            .rounded(px(metrics::RADIUS_INPUT))
+            .bg(t.input)
+            .border_1()
+            .border_color(t.border)
+            .text_size(px(metrics::TEXT_ROW))
+            .cursor_pointer()
+            .occlude()
+            .hover(|s| s.border_color(t.border_bright))
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_gitignore(window, cx)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(label.1)
+                    .child(label.0),
+            )
+            .child(
+                crate::icons::icon("chevron-down")
+                    .size(px(12.))
+                    .text_color(t.text_dim),
+            );
+        if self.gitignore_open {
+            row = row
+                .border_color(t.accent_line_mid)
+                .child(self.gitignore_menu(cx));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(
+                div()
+                    .text_size(px(metrics::TEXT_SMALL))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(t.text_soft)
+                    .child("Git ignore"),
+            )
+            .child(row)
+    }
+
+    /// The frosted template menu: a filter field, "None", then every
+    /// vendored template matching the filter.
+    fn gitignore_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme().clone();
+        let filter = self.gitignore_filter.read(cx).content().to_lowercase();
+        let this = cx.entity().downgrade();
+        let pick = move |name: Option<String>, cx: &mut gpui::App| {
+            if let Some(this) = this.upgrade() {
+                this.update(cx, |d, cx| {
+                    d.gitignore = name;
+                    d.gitignore_open = false;
+                    cx.notify();
+                });
+            }
+        };
+        let dismiss = {
+            let this = cx.entity().downgrade();
+            move |_: &mut Window, cx: &mut gpui::App| {
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |d, cx| {
+                        d.gitignore_open = false;
+                        cx.notify();
+                    });
+                }
+            }
+        };
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        {
+            let pick = pick.clone();
+            rows.push(
+                menu_row("gi-none", "None")
+                    .icon(if self.gitignore.is_none() {
+                        "check"
+                    } else {
+                        "file"
+                    })
+                    .selected(self.gitignore.is_none())
+                    .on_click(move |_, _, cx| pick(None, cx))
+                    .into_any_element(),
+            );
+        }
+        for (i, name) in gitignore::templates().enumerate() {
+            if !filter.is_empty() && !name.to_lowercase().contains(&filter) {
+                continue;
+            }
+            let selected = self.gitignore.as_deref() == Some(name);
+            let pick = pick.clone();
+            rows.push(
+                menu_row(("gi", i), name)
+                    .icon(if selected { "check" } else { "file" })
+                    .selected(selected)
+                    .on_click(move |_, _, cx| pick(Some(name.to_string()), cx))
+                    .into_any_element(),
+            );
+        }
+        let empty = rows.len() == 1 && !filter.is_empty();
+        popover("gitignore-popover")
+            .width(300.)
+            .on_dismiss(dismiss)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .h(px(34.))
+                    .px(px(10.))
+                    .mb(px(4.))
+                    .rounded(px(10.))
+                    .bg(t.recessed())
+                    .text_size(px(13.))
+                    .child(
+                        crate::icons::icon("search")
+                            .size(px(14.))
+                            .text_color(t.text_dim),
+                    )
+                    .child(div().flex_1().child(self.gitignore_filter.clone())),
+            )
+            .child(
+                div()
+                    .id("gitignore-list")
+                    .max_h(px(280.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .children(rows)
+                    .when(empty, |el| {
+                        el.child(
+                            div()
+                                .px(px(9.))
+                                .py(px(8.))
+                                .text_size(px(12.5))
+                                .text_color(t.text_dim)
+                                .child("No templates match."),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .px(px(10.))
+                    .pt(px(5.))
+                    .pb(px(2.))
+                    .text_size(px(11.))
+                    .text_color(t.text_faint)
+                    .child("From github/gitignore — lands as .gitignore."),
             )
     }
 }

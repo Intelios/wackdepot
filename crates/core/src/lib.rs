@@ -20,6 +20,7 @@
 //! - [`branch`] — list/create/checkout/delete branches.
 //! - [`merge`] — `git merge` / `--squash` and `merge-tree` conflict previews.
 //! - [`sync`] — fetch/pull/push/clone, repo creation.
+//! - [`gitignore`] — vendored .gitignore templates and .gitignore edits.
 //! - [`stash`] — stash list/push/apply/pop/drop.
 //! - [`repo`] — repo discovery (`is_repo`, `repo_root`), `git_version`.
 //! - [`blob`] — whole-file text for either side of a change (highlighting).
@@ -34,6 +35,7 @@ pub mod commit;
 pub mod config;
 pub mod diff;
 mod git;
+pub mod gitignore;
 pub mod graph;
 pub mod merge;
 pub mod progress;

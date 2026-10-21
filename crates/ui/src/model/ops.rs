@@ -11,7 +11,7 @@ use wackdepot_core::merge::{MergeMethod, MergeOutcome};
 use wackdepot_core::stage::{ConflictSide, LineSel};
 use wackdepot_core::stash::StashAction;
 use wackdepot_core::status::Operation;
-use wackdepot_core::{branch, commit, merge, stage, stash, status, sync};
+use wackdepot_core::{branch, commit, gitignore, merge, stage, stash, status, sync};
 
 use super::web::GitHubTarget;
 use super::{Beat, Bucket, BusyOp, ConfirmAction, Done, NoticeKind, RepoModel, Tab};
@@ -590,17 +590,49 @@ impl RepoModel {
         );
     }
 
-    /// `git init` a new repo at `path`, then open it.
-    pub fn create_repo(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    /// `git init` a new repo at `path`, then open it. A picked gitignore
+    /// template lands as `.gitignore`, ready for the first commit — a
+    /// write failure doesn't cancel the repo, it just downgrades the toast.
+    pub fn create_repo(&mut self, path: PathBuf, template: Option<String>, cx: &mut Context<Self>) {
         self.run_detached(
             BusyOp::Other("Creating repository"),
             move |_, _| {
                 sync::create_repo(&path)?;
+                let toast = match template.as_deref().and_then(gitignore::template) {
+                    Some(body) => match gitignore::write_gitignore(&path, body) {
+                        Ok(()) => "Repository created.".to_string(),
+                        Err(e) => e,
+                    },
+                    None => "Repository created.".to_string(),
+                };
                 Ok(Done {
-                    toast: Some("Repository created.".into()),
+                    toast: Some(toast),
                     open: Some(path),
                     ..Done::default()
                 })
+            },
+            cx,
+        );
+    }
+
+    /// Add `path` to the repo's `.gitignore` — itself (`Ignore file`) or
+    /// its extension (`Ignore all .ext files`). Only offered on untracked
+    /// files, where the effect is visible; on a tracked file a gitignore
+    /// line silently does nothing.
+    pub fn ignore_path(&mut self, path: String, by_ext: bool, cx: &mut Context<Self>) {
+        let pattern = if by_ext {
+            gitignore::extension_pattern(&path)
+        } else {
+            Some(gitignore::escape(&path))
+        };
+        let Some(pattern) = pattern else {
+            return;
+        };
+        self.run(
+            BusyOp::Other("Updating .gitignore"),
+            move |r, _| {
+                gitignore::update_gitignore(r, std::slice::from_ref(&pattern))?;
+                Ok(Done::toast(format!("Added {pattern} to .gitignore.")))
             },
             cx,
         );
