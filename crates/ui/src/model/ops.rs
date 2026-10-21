@@ -11,10 +11,10 @@ use wackdepot_core::merge::{MergeMethod, MergeOutcome};
 use wackdepot_core::stage::{ConflictSide, LineSel};
 use wackdepot_core::stash::StashAction;
 use wackdepot_core::status::Operation;
-use wackdepot_core::{branch, commit, gitignore, merge, stage, stash, status, sync};
+use wackdepot_core::{branch, commit, gitignore, merge, remote, stage, stash, status, sync};
 
 use super::web::GitHubTarget;
-use super::{Beat, Bucket, BusyOp, ConfirmAction, Done, NoticeKind, RepoModel, Tab};
+use super::{Beat, Bucket, BusyOp, ConfirmAction, Done, NoticeKind, RepoEvent, RepoModel, Tab};
 
 fn sink_progress(
     sink: &super::ProgressSink,
@@ -39,6 +39,7 @@ impl RepoModel {
             return;
         };
         if s.upstream.is_none() && s.branch.is_some() {
+            // `push` routes remote-less repos to the publish dialog.
             self.push(cx);
         } else if s.behind > 0 {
             self.pull(cx);
@@ -72,6 +73,11 @@ impl RepoModel {
     }
 
     pub fn push(&mut self, cx: &mut Context<Self>) {
+        if self.snap.remotes.is_empty() {
+            // Nowhere to push to — GitHub Desktop opens Publish instead.
+            cx.emit(RepoEvent::Publish);
+            return;
+        }
         self.run(
             BusyOp::Push,
             |r, sink| {
@@ -590,19 +596,22 @@ impl RepoModel {
         );
     }
 
-    /// `git init` a new repo at `path`, then open it. A picked gitignore
-    /// template lands as `.gitignore`, ready for the first commit — a
-    /// write failure doesn't cancel the repo, it just downgrades the toast.
-    pub fn create_repo(&mut self, path: PathBuf, template: Option<String>, cx: &mut Context<Self>) {
+    /// `git init` a new repo at `path` with the dialog's picked files
+    /// (README, gitignore, license, description, `.gitattributes`) and an
+    /// initial commit, then open it. A scaffold step that fails doesn't
+    /// cancel the repo — its sentence lands in the toast instead.
+    pub fn create_repo(
+        &mut self,
+        path: PathBuf,
+        opts: sync::CreateOptions,
+        cx: &mut Context<Self>,
+    ) {
         self.run_detached(
             BusyOp::Other("Creating repository"),
             move |_, _| {
-                sync::create_repo(&path)?;
-                let toast = match template.as_deref().and_then(gitignore::template) {
-                    Some(body) => match gitignore::write_gitignore(&path, body) {
-                        Ok(()) => "Repository created.".to_string(),
-                        Err(e) => e,
-                    },
+                let warnings = sync::create_repo_with(&path, &opts)?;
+                let toast = match warnings.first() {
+                    Some(w) => format!("Repository created — {w}"),
                     None => "Repository created.".to_string(),
                 };
                 Ok(Done {
@@ -610,6 +619,57 @@ impl RepoModel {
                     open: Some(path),
                     ..Done::default()
                 })
+            },
+            cx,
+        );
+    }
+
+    /// Create `name` on GitHub under the connected account, wire it up as
+    /// `origin`, and push the current branch when one exists with commits.
+    /// An unborn repo just gets its remote — its first push follows its
+    /// first commit (GitHub Desktop does the same).
+    pub fn publish_repo(
+        &mut self,
+        client: wackdepot_github::Client,
+        name: String,
+        description: String,
+        private: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let executable = std::env::current_exe().ok();
+        self.run(
+            BusyOp::Push,
+            move |r, sink| {
+                let repo = client.create_repository(&name, &description, private)?;
+                let id = repo.identity().full_name();
+                let url = if repo.clone_url.is_empty() {
+                    format!("https://github.com/{id}.git")
+                } else {
+                    repo.clone_url.clone()
+                };
+                let git = executable.as_deref().map_or_else(
+                    || wackdepot_core::Git::new(r),
+                    |exe| wackdepot_core::Git::new(r).with_github_credentials(exe),
+                );
+                git.run(["remote", "add", "origin", &url])?;
+                let has_commits = git
+                    .try_run(["rev-parse", "--verify", "--quiet", "HEAD"])
+                    .map(|o| o.ok())
+                    .unwrap_or(false);
+                let branch = branch::current_branch(r)?;
+                match (branch, has_commits) {
+                    (Some(b), true) => {
+                        remote::publish(&git, "origin", &b, &url, &mut sink_progress(sink))?;
+                        Ok(Done {
+                            toast: Some(format!("Published github.com/{id}.")),
+                            beat: Some(Beat::Pushed),
+                            ..Done::default()
+                        })
+                    }
+                    _ => Ok(Done::toast(format!(
+                        "Created github.com/{id} — commit something, then publish the branch."
+                    ))),
+                }
             },
             cx,
         );

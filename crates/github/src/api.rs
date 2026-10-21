@@ -383,6 +383,24 @@ impl Client {
     pub fn repository(&self, id: &RepositoryId) -> Result<Repository, String> {
         from_value(self.request("GET", &format!("/repos/{}", id.full_name()), None)?)
     }
+    /// Create a repository under the connected account (`POST /user/repos`).
+    /// A name that's taken comes back as GitHub's 422 message, shown verbatim.
+    pub fn create_repository(
+        &self,
+        name: &str,
+        description: &str,
+        private: bool,
+    ) -> Result<Repository, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Give the repository a name first.".into());
+        }
+        from_value(self.request(
+            "POST",
+            "/user/repos",
+            Some(json!({"name":name,"description":description,"private":private})),
+        )?)
+    }
     pub fn pull(&self, id: &RepositoryId, number: u64) -> Result<PullRequest, String> {
         from_value(self.request(
             "GET",

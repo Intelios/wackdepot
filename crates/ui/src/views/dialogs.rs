@@ -10,14 +10,16 @@ use gpui::{
     Render, SharedString, Styled, WeakEntity, Window, div, prelude::*, px,
 };
 use wackdepot_core::gitignore;
+use wackdepot_core::license;
 use wackdepot_core::merge::{MergeMethod, MergePreview};
 use wackdepot_core::stage::ConflictSide;
 use wackdepot_core::status::FileChange;
+use wackdepot_core::sync::CreateOptions;
 
 use crate::app::overlays::Overlays;
 use crate::components::button::{button, icon_button};
 use crate::components::mark::{accent_mark, status_mark};
-use crate::components::menu::{menu_heading, menu_row, popover};
+use crate::components::menu::{menu_heading, menu_row, menu_separator, popover};
 use crate::components::pill_track::pill_track;
 use crate::components::text_input::{TextInput, TextInputEvent};
 use crate::model::{Bucket, RepoEvent, RepoModel};
@@ -297,15 +299,27 @@ impl Render for CloneDialog {
 
 // ── New repository ────────────────────────────────────────────────────
 
+/// Which option list the dialog's picker popover is serving.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    Gitignore,
+    License,
+}
+
 pub struct NewRepoDialog {
     model: Entity<RepoModel>,
     overlays: WeakEntity<Overlays>,
     name: Entity<TextInput>,
+    description: Entity<TextInput>,
     parent: Entity<TextInput>,
+    readme: bool,
     /// The picked .gitignore template's name, `None` for a bare repo.
     gitignore: Option<String>,
-    gitignore_open: bool,
-    gitignore_filter: Entity<TextInput>,
+    /// The picked license's display name.
+    license: Option<String>,
+    /// Which picker's popover is open (both share one filter input).
+    pick_open: Option<Pick>,
+    pick_filter: Entity<TextInput>,
     error: Option<SharedString>,
 }
 
@@ -317,12 +331,13 @@ impl NewRepoDialog {
         cx: &mut Context<Self>,
     ) -> Self {
         let name = cx.new(|cx| TextInput::new("my-project", cx));
+        let description = cx.new(|cx| TextInput::new("What this repository does", cx));
         let parent = cx.new(|cx| {
             let mut i = TextInput::new("~/Documents/GitHub", cx);
             i.set_content(tilde(&default_parent()), cx);
             i
         });
-        for input in [&name, &parent] {
+        for input in [&name, &description, &parent] {
             cx.subscribe(
                 input,
                 |this: &mut Self, _, e: &TextInputEvent, cx| match e {
@@ -332,12 +347,12 @@ impl NewRepoDialog {
             )
             .detach();
         }
-        let gitignore_filter = cx.new(|cx| TextInput::new("Filter templates", cx));
+        let pick_filter = cx.new(|cx| TextInput::new("Filter", cx));
         cx.subscribe(
-            &gitignore_filter,
+            &pick_filter,
             |this: &mut Self, _, e: &TextInputEvent, cx| match e {
                 TextInputEvent::Changed => cx.notify(),
-                TextInputEvent::Submit => this.pick_first_gitignore(cx),
+                TextInputEvent::Submit => this.pick_first(cx),
             },
         )
         .detach();
@@ -346,12 +361,78 @@ impl NewRepoDialog {
             model,
             overlays,
             name,
+            description,
             parent,
+            readme: false,
             gitignore: None,
-            gitignore_open: false,
-            gitignore_filter,
+            license: None,
+            pick_open: None,
+            pick_filter,
             error: None,
         }
+    }
+
+    /// The options a picker lists — licenses put their featured three first
+    /// like GitHub Desktop's dropdown.
+    fn pick_items(pick: Pick) -> Vec<String> {
+        match pick {
+            Pick::Gitignore => gitignore::templates().map(str::to_string).collect(),
+            Pick::License => {
+                let (featured, rest): (Vec<_>, Vec<_>) =
+                    license::licenses().partition(|l| l.featured);
+                featured
+                    .into_iter()
+                    .chain(rest)
+                    .map(|l| l.name.to_string())
+                    .collect()
+            }
+        }
+    }
+
+    fn picked(&self, pick: Pick) -> &Option<String> {
+        match pick {
+            Pick::Gitignore => &self.gitignore,
+            Pick::License => &self.license,
+        }
+    }
+
+    fn set_pick(&mut self, pick: Pick, name: Option<String>) {
+        match pick {
+            Pick::Gitignore => self.gitignore = name,
+            Pick::License => self.license = name,
+        }
+        self.pick_open = None;
+    }
+
+    /// Enter in a picker filter picks its top match.
+    fn pick_first(&mut self, cx: &mut Context<Self>) {
+        let Some(pick) = self.pick_open else { return };
+        let filter = self.pick_filter.read(cx).content().to_lowercase();
+        if filter.is_empty() {
+            return;
+        }
+        if let Some(name) = Self::pick_items(pick)
+            .into_iter()
+            .find(|n| n.to_lowercase().contains(&filter))
+        {
+            self.set_pick(pick, Some(name));
+            cx.notify();
+        }
+    }
+
+    fn toggle_pick(&mut self, pick: Pick, window: &mut Window, cx: &mut Context<Self>) {
+        self.pick_open = if self.pick_open == Some(pick) {
+            None
+        } else {
+            Some(pick)
+        };
+        if self.pick_open.is_some() {
+            self.pick_filter.update(cx, |i, cx| {
+                i.clear(cx);
+                i.focus(window, cx);
+            });
+        }
+        cx.notify();
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -372,36 +453,16 @@ impl NewRepoDialog {
             cx.notify();
             return;
         }
-        let template = self.gitignore.clone();
-        self.model
-            .update(cx, |m, cx| m.create_repo(path, template, cx));
+        let opts = CreateOptions {
+            description: self.description.read(cx).content().trim().to_string(),
+            readme: self.readme,
+            gitignore: self.gitignore.clone(),
+            license: self.license.clone(),
+        };
+        self.model.update(cx, |m, cx| m.create_repo(path, opts, cx));
         if let Some(o) = self.overlays.upgrade() {
             o.update(cx, |o, cx| o.close(cx));
         }
-    }
-
-    /// Enter in the template filter picks the top match.
-    fn pick_first_gitignore(&mut self, cx: &mut Context<Self>) {
-        let filter = self.gitignore_filter.read(cx).content().to_lowercase();
-        if filter.is_empty() {
-            return;
-        }
-        if let Some(name) = gitignore::templates().find(|n| n.to_lowercase().contains(&filter)) {
-            self.gitignore = Some(name.to_string());
-            self.gitignore_open = false;
-            cx.notify();
-        }
-    }
-
-    fn toggle_gitignore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.gitignore_open = !self.gitignore_open;
-        if self.gitignore_open {
-            self.gitignore_filter.update(cx, |i, cx| {
-                i.clear(cx);
-                i.focus(window, cx);
-            });
-        }
-        cx.notify();
     }
 
     fn choose(&mut self, cx: &mut Context<Self>) {
@@ -449,6 +510,22 @@ impl Render for NewRepoDialog {
                 .icon("plus")
                 .on_click(move |_, _, cx| e.update(cx, |d, cx| d.submit(cx)))
         };
+        let readme = {
+            let e = entity.clone();
+            let checked = self.readme;
+            check_row(
+                "new-readme",
+                "Initialize this repository with a README",
+                checked,
+                cx,
+            )
+            .on_click(move |_, _, cx| {
+                e.update(cx, |d, cx| {
+                    d.readme = !checked;
+                    cx.notify();
+                })
+            })
+        };
         div()
             .flex()
             .flex_col()
@@ -456,10 +533,11 @@ impl Render for NewRepoDialog {
             .child(head(
                 "folder-plus",
                 "New repository",
-                "A fresh repository on main, ready for its first commit.",
+                "A fresh repository on main, with its first commit made.",
                 cx,
             ))
             .child(field("Name", &self.name, None, window, cx))
+            .child(field("Description", &self.description, None, window, cx))
             .child(field(
                 "Inside",
                 &self.parent,
@@ -467,7 +545,9 @@ impl Render for NewRepoDialog {
                 window,
                 cx,
             ))
-            .child(self.gitignore_row(cx))
+            .child(readme)
+            .child(self.option_row(Pick::Gitignore, "Git ignore", cx))
+            .child(self.option_row(Pick::License, "License", cx))
             .children(
                 self.error
                     .clone()
@@ -485,16 +565,22 @@ impl Render for NewRepoDialog {
 }
 
 impl NewRepoDialog {
-    /// The "Git ignore" row — a field lookalike that opens the template
-    /// popover. GitHub Desktop's dropdown, as a filterable frosted menu.
-    fn gitignore_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// A labelled field-lookalike row that opens `pick`'s filterable
+    /// popover — GitHub Desktop's dropdowns, as frosted menus.
+    fn option_row(
+        &self,
+        pick: Pick,
+        label: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let t = cx.theme().clone();
-        let label = match &self.gitignore {
+        let (value, color) = match self.picked(pick) {
             Some(name) => (name.clone(), t.text),
             None => ("None".to_string(), t.text_faint),
         };
+        let open = self.pick_open == Some(pick);
         let mut row = div()
-            .id("gitignore-row")
+            .id(label)
             .relative()
             .flex()
             .items_center()
@@ -509,24 +595,24 @@ impl NewRepoDialog {
             .cursor_pointer()
             .occlude()
             .hover(|s| s.border_color(t.border_bright))
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_gitignore(window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.toggle_pick(pick, window, cx)))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_color(label.1)
-                    .child(label.0),
+                    .text_color(color)
+                    .child(value),
             )
             .child(
                 crate::icons::icon("chevron-down")
                     .size(px(12.))
                     .text_color(t.text_dim),
             );
-        if self.gitignore_open {
+        if open {
             row = row
                 .border_color(t.accent_line_mid)
-                .child(self.gitignore_menu(cx));
+                .child(self.option_menu(pick, cx));
         }
         div()
             .flex()
@@ -537,32 +623,28 @@ impl NewRepoDialog {
                     .text_size(px(metrics::TEXT_SMALL))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(t.text_soft)
-                    .child("Git ignore"),
+                    .child(label),
             )
             .child(row)
     }
 
-    /// The frosted template menu: a filter field, "None", then every
-    /// vendored template matching the filter.
-    fn gitignore_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The frosted option menu: a filter field, "None", then every option
+    /// matching the filter — licenses keep Desktop's featured divider.
+    fn option_menu(&self, pick: Pick, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
-        let filter = self.gitignore_filter.read(cx).content().to_lowercase();
+        let filter = self.pick_filter.read(cx).content().to_lowercase();
+        let picked = self.picked(pick).clone();
         let this = cx.entity().downgrade();
-        let pick = move |name: Option<String>, cx: &mut gpui::App| {
-            if let Some(this) = this.upgrade() {
-                this.update(cx, |d, cx| {
-                    d.gitignore = name;
-                    d.gitignore_open = false;
-                    cx.notify();
-                });
-            }
+        let pick_name = move |d: &mut Self, name: Option<String>, cx: &mut Context<Self>| {
+            d.set_pick(pick, name);
+            cx.notify();
         };
         let dismiss = {
             let this = cx.entity().downgrade();
             move |_: &mut Window, cx: &mut gpui::App| {
                 if let Some(this) = this.upgrade() {
                     this.update(cx, |d, cx| {
-                        d.gitignore_open = false;
+                        d.pick_open = None;
                         cx.notify();
                     });
                 }
@@ -570,35 +652,69 @@ impl NewRepoDialog {
         };
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         {
-            let pick = pick.clone();
+            let this = this.clone();
             rows.push(
-                menu_row("gi-none", "None")
-                    .icon(if self.gitignore.is_none() {
-                        "check"
-                    } else {
-                        "file"
+                menu_row("pick-none", "None")
+                    .icon(if picked.is_none() { "check" } else { "file" })
+                    .selected(picked.is_none())
+                    .on_click(move |_, _, cx| {
+                        if let Some(this) = this.upgrade() {
+                            this.update(cx, |d, cx| pick_name(d, None, cx));
+                        }
                     })
-                    .selected(self.gitignore.is_none())
-                    .on_click(move |_, _, cx| pick(None, cx))
                     .into_any_element(),
             );
         }
-        for (i, name) in gitignore::templates().enumerate() {
-            if !filter.is_empty() && !name.to_lowercase().contains(&filter) {
-                continue;
+        let matches = |name: &str| filter.is_empty() || name.to_lowercase().contains(&filter);
+        let add_rows = |names: &[String], rows: &mut Vec<gpui::AnyElement>| {
+            for name in names {
+                let selected = picked.as_deref() == Some(name.as_str());
+                let this = this.clone();
+                let name = name.clone();
+                rows.push(
+                    menu_row(("pick", rows.len()), name.clone())
+                        .icon(if selected { "check" } else { "file" })
+                        .selected(selected)
+                        .on_click(move |_, _, cx| {
+                            if let Some(this) = this.upgrade() {
+                                this.update(cx, |d, cx| pick_name(d, Some(name.clone()), cx));
+                            }
+                        })
+                        .into_any_element(),
+                );
             }
-            let selected = self.gitignore.as_deref() == Some(name);
-            let pick = pick.clone();
-            rows.push(
-                menu_row(("gi", i), name)
-                    .icon(if selected { "check" } else { "file" })
-                    .selected(selected)
-                    .on_click(move |_, _, cx| pick(Some(name.to_string()), cx))
-                    .into_any_element(),
-            );
+        };
+        if pick == Pick::License {
+            // Desktop shows the featured licenses, a divider, then the rest.
+            let items = Self::pick_items(pick);
+            let n_featured = license::licenses().filter(|l| l.featured).count();
+            let (featured, rest) = items.split_at(n_featured.min(items.len()));
+            let featured: Vec<String> = featured.iter().filter(|n| matches(n)).cloned().collect();
+            let rest: Vec<String> = rest.iter().filter(|n| matches(n)).cloned().collect();
+            add_rows(&featured, &mut rows);
+            if !featured.is_empty() && !rest.is_empty() {
+                rows.push(menu_separator(cx).into_any_element());
+            }
+            add_rows(&rest, &mut rows);
+        } else {
+            let items: Vec<String> = Self::pick_items(pick)
+                .into_iter()
+                .filter(|n| matches(n))
+                .collect();
+            add_rows(&items, &mut rows);
         }
         let empty = rows.len() == 1 && !filter.is_empty();
-        popover("gitignore-popover")
+        let (id, note) = match pick {
+            Pick::Gitignore => (
+                "gitignore-popover",
+                "From github/gitignore — lands as .gitignore.",
+            ),
+            Pick::License => (
+                "license-popover",
+                "From choosealicense.com — lands as LICENSE.",
+            ),
+        };
+        popover(id)
             .width(300.)
             .on_dismiss(dismiss)
             .child(
@@ -617,11 +733,11 @@ impl NewRepoDialog {
                             .size(px(14.))
                             .text_color(t.text_dim),
                     )
-                    .child(div().flex_1().child(self.gitignore_filter.clone())),
+                    .child(div().flex_1().child(self.pick_filter.clone())),
             )
             .child(
                 div()
-                    .id("gitignore-list")
+                    .id("pick-list")
                     .max_h(px(280.))
                     .overflow_y_scroll()
                     .flex()
@@ -635,7 +751,7 @@ impl NewRepoDialog {
                                 .py(px(8.))
                                 .text_size(px(12.5))
                                 .text_color(t.text_dim)
-                                .child("No templates match."),
+                                .child("Nothing matches."),
                         )
                     }),
             )
@@ -646,8 +762,241 @@ impl NewRepoDialog {
                     .pb(px(2.))
                     .text_size(px(11.))
                     .text_color(t.text_faint)
-                    .child("From github/gitignore — lands as .gitignore."),
+                    .child(note),
             )
+    }
+}
+
+/// A small checkbox row — an accent check in a rounded square, its label
+/// beside. Used by New repository (README) and Publish (private).
+fn check_row(
+    id: impl Into<gpui::ElementId>,
+    label: &'static str,
+    checked: bool,
+    cx: &App,
+) -> gpui::Stateful<gpui::Div> {
+    let t = cx.theme().clone();
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(9.))
+        .h(px(22.))
+        .cursor_pointer()
+        .child(
+            div()
+                .size(px(16.))
+                .flex_none()
+                .rounded(px(5.))
+                .border_1()
+                .border_color(if checked {
+                    t.accent_line
+                } else {
+                    t.border_bright
+                })
+                .when(checked, |el| el.bg(t.accent))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(checked, |el| {
+                    el.child(
+                        crate::icons::icon("check")
+                            .size(px(11.))
+                            .text_color(t.on_accent),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .text_size(px(metrics::TEXT_ROW))
+                .text_color(t.text_soft)
+                .child(label),
+        )
+}
+
+// ── Publish ───────────────────────────────────────────────────────────
+
+/// Put a remote-less repo on GitHub: create it under the connected
+/// account, wire up `origin`, and push the current branch — GitHub
+/// Desktop's "Publish repository". Without a connected account it offers
+/// the sign-in link instead of the form.
+pub struct PublishDialog {
+    model: Entity<RepoModel>,
+    overlays: WeakEntity<Overlays>,
+    session: Entity<crate::github::GitHubSession>,
+    name: Entity<TextInput>,
+    description: Entity<TextInput>,
+    private: bool,
+    /// Focus the name field on first render — construction can arrive via
+    /// the model's publish event, without a window to focus through.
+    needs_focus: bool,
+    error: Option<SharedString>,
+}
+
+impl PublishDialog {
+    pub fn new(
+        model: Entity<RepoModel>,
+        overlays: WeakEntity<Overlays>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let session = crate::github::session(cx);
+        cx.observe(&session, |_, _, cx| cx.notify()).detach();
+        let name = cx.new(|cx| TextInput::new("repository-name", cx));
+        if let Some(repo) = model.read(cx).name() {
+            name.update(cx, |i, cx| {
+                i.set_content(license::sanitized_repository_name(&repo), cx)
+            });
+        }
+        let description = cx.new(|cx| TextInput::new("What this repository does", cx));
+        for input in [&name, &description] {
+            cx.subscribe(
+                input,
+                |this: &mut Self, _, e: &TextInputEvent, cx| match e {
+                    TextInputEvent::Changed => this.error = None,
+                    TextInputEvent::Submit => this.submit(cx),
+                },
+            )
+            .detach();
+        }
+        let needs_focus = session.read(cx).user.is_some();
+        Self {
+            model,
+            overlays,
+            session,
+            name,
+            description,
+            private: true,
+            needs_focus,
+            error: None,
+        }
+    }
+
+    fn submit(&mut self, cx: &mut Context<Self>) {
+        let name = license::sanitized_repository_name(self.name.read(cx).content().trim());
+        if name.is_empty() {
+            self.error = Some("Give the repository a name first.".into());
+            cx.notify();
+            return;
+        }
+        let description = self.description.read(cx).content().trim().to_string();
+        let client = self.session.read(cx).client.clone();
+        let private = self.private;
+        self.model.update(cx, |m, cx| {
+            m.publish_repo(client, name, description, private, cx)
+        });
+        if let Some(o) = self.overlays.upgrade() {
+            o.update(cx, |o, cx| o.close(cx));
+        }
+    }
+}
+
+impl Render for PublishDialog {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.needs_focus && self.session.read(cx).user.is_some() {
+            self.needs_focus = false;
+            self.name.update(cx, |i, cx| i.focus(window, cx));
+        }
+        let t = cx.theme().clone();
+        let entity = cx.entity();
+        let session = self.session.read(cx);
+        let user = session.user.clone();
+        let connecting = session.connecting;
+        let session_error = session.error.clone();
+        let cancel = {
+            let o = self.overlays.clone();
+            button("publish-cancel", "Cancel").on_click(move |_, _, cx| {
+                if let Some(o) = o.upgrade() {
+                    o.update(cx, |o, cx| o.close(cx));
+                }
+            })
+        };
+        let mut card = div().flex().flex_col().gap(px(16.)).child(head(
+            "cloud",
+            "Publish repository",
+            "Share this repository on github.com.",
+            cx,
+        ));
+        match user {
+            None => {
+                let session = self.session.clone();
+                let connect = button(
+                    "publish-connect",
+                    if connecting {
+                        "Connecting…"
+                    } else {
+                        "Connect GitHub…"
+                    },
+                )
+                .primary()
+                .icon("external")
+                .disabled(connecting)
+                .on_click(move |_, _, cx| session.update(cx, |s, cx| s.connect(cx)));
+                card = card
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .text_color(t.text_soft)
+                            .child("Publishing creates a repository under your GitHub account, adds it as origin, and pushes the current branch."),
+                    )
+                    .children(
+                        session_error
+                            .map(|e| div().text_size(px(12.)).text_color(t.sem.danger).child(e)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(cancel)
+                            .child(connect),
+                    );
+            }
+            Some(user) => {
+                let go = {
+                    let e = entity.clone();
+                    button("publish-go", "Publish repository")
+                        .primary()
+                        .icon("push")
+                        .on_click(move |_, _, cx| e.update(cx, |d, cx| d.submit(cx)))
+                };
+                let private = {
+                    let e = entity.clone();
+                    let checked = self.private;
+                    check_row("publish-private", "Keep this code private", checked, cx).on_click(
+                        move |_, _, cx| {
+                            e.update(cx, |d, cx| {
+                                d.private = !checked;
+                                cx.notify();
+                            })
+                        },
+                    )
+                };
+                card = card
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(t.text_faint)
+                            .child(format!("Publishing as @{}.", user.login)),
+                    )
+                    .child(field("Name", &self.name, None, window, cx))
+                    .child(field("Description", &self.description, None, window, cx))
+                    .child(private)
+                    .children(
+                        self.error
+                            .clone()
+                            .map(|e| div().text_size(px(12.)).text_color(t.sem.danger).child(e)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(cancel)
+                            .child(go),
+                    );
+            }
+        }
+        card
     }
 }
 

@@ -259,6 +259,9 @@ impl TitlebarView {
                 ("fetch", format!("{}{pct}", op.label()).into(), true)
             }
             None if comet < 1.0 => ("check", "Pushed".into(), true),
+            _ if unpublished && model.snap.remotes.is_empty() => {
+                ("cloud", "Publish repository".into(), true)
+            }
             _ if unpublished => ("cloud", "Publish branch".into(), true),
             _ if behind > 0 => ("pull", format!("Pull {behind}").into(), true),
             _ if ahead > 0 => ("push", format!("Push {ahead}").into(), true),

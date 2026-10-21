@@ -137,6 +137,7 @@ impl Workspace {
             RepoEvent::Confirm(a) => ws
                 .overlays
                 .update(cx, |o, cx| o.confirm(a.clone(), None, cx)),
+            RepoEvent::Publish => ws.overlays.update(cx, |o, cx| o.open_publish(cx)),
             RepoEvent::Opened => {
                 ws.route = Route::Repo;
                 ws.rebuild_in();

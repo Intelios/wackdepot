@@ -69,6 +69,13 @@ pub struct Repository {
     pub owner: User,
     #[serde(default)]
     pub default_branch: String,
+    /// `https://github.com/owner/name.git` — what `origin` gets on publish.
+    #[serde(default)]
+    pub clone_url: String,
+    #[serde(default)]
+    pub ssh_url: String,
+    #[serde(default)]
+    pub html_url: String,
     #[serde(default)]
     pub fork: bool,
     #[serde(default)]

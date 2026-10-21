@@ -151,6 +151,10 @@ fn run_global_with_cwd(
 /// for git < 2.28 which lacks `-b`.
 pub fn create_repo(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|e| format!("Couldn't create {} — {e}.", path.display()))?;
+    init_repo(path)
+}
+
+fn init_repo(path: &Path) -> Result<(), String> {
     let g = Git::new(path);
     if g.try_run(["init", "-b", "main"])
         .map(|o| o.ok())
@@ -161,6 +165,129 @@ pub fn create_repo(path: &Path) -> Result<(), String> {
     g.run(["init"])?;
     g.run(["symbolic-ref", "HEAD", "refs/heads/main"])?;
     Ok(())
+}
+
+/// What the create-repository dialog picked, beyond the folder — each `None`/
+/// `false` skips its file, like GitHub Desktop's "None" options.
+#[derive(Debug, Clone, Default)]
+pub struct CreateOptions {
+    /// Longer blurb: lands in the README and `.git/description`.
+    pub description: String,
+    /// Initialize with a `README.md` (`# <name>` + description).
+    pub readme: bool,
+    /// A vendored gitignore template name (see [`crate::gitignore`]).
+    pub gitignore: Option<String>,
+    /// A vendored license name (see [`crate::license`]).
+    pub license: Option<String>,
+}
+
+/// `git init` a new repo at `path`, then lay down the files `opts` asked for
+/// — README, `.gitignore`, `.git/description`, `LICENSE`, `.gitattributes` —
+/// and commit them as "Initial commit", mirroring GitHub Desktop's create
+/// flow. A failed write or commit doesn't cancel the repo: it lands in the
+/// returned warnings so the UI can toast it.
+pub fn create_repo_with(path: &Path, opts: &CreateOptions) -> Result<Vec<String>, String> {
+    create_repo(path)?;
+    let mut warnings = Vec::new();
+    let mut note = |result: Result<(), String>| {
+        if let Err(e) = result {
+            warnings.push(e);
+        }
+    };
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repository".into());
+    if opts.readme {
+        note(write_default_readme(path, &name, &opts.description));
+    }
+    if let Some(template) = opts.gitignore.as_deref()
+        && let Some(body) = crate::gitignore::template(template)
+    {
+        note(crate::gitignore::write_gitignore(path, body));
+    }
+    if !opts.description.trim().is_empty() {
+        note(write_git_description(path, &opts.description));
+    }
+    if let Some(license_name) = opts.license.as_deref()
+        && let Some(license) = crate::license::license(license_name)
+    {
+        let (fullname, email) = crate::commit::author(path).unwrap_or_default();
+        let fields = crate::license::LicenseFields {
+            fullname,
+            email,
+            project: name.clone(),
+            description: String::new(),
+            year: current_year(),
+        };
+        note(crate::license::write_license(path, &license, &fields));
+    }
+    if !path.join(".gitattributes").exists() {
+        note(write_gitattributes(path));
+    }
+    if let Err(e) = initial_commit(path) {
+        warnings.push(e);
+    }
+    Ok(warnings)
+}
+
+/// `# <name>` plus the description — what "Initialize with README" writes.
+fn write_default_readme(dir: &Path, name: &str, description: &str) -> Result<(), String> {
+    let description = description.trim();
+    let contents = if description.is_empty() {
+        format!("# {name}\n")
+    } else {
+        format!("# {name}\n{description}\n")
+    };
+    fs::write(dir.join("README.md"), contents)
+        .map_err(|e| format!("Couldn't write README.md — {e}."))
+}
+
+/// The repo's `.git/description` — gitweb/Git hosting metadata.
+fn write_git_description(dir: &Path, description: &str) -> Result<(), String> {
+    fs::write(
+        dir.join(".git/description"),
+        format!("{}\n", description.trim()),
+    )
+    .map_err(|e| format!("Couldn't write .git/description — {e}."))
+}
+
+/// `# Auto detect text files and perform LF normalization\n* text=auto` —
+/// Desktop's default `.gitattributes` for every new repository.
+fn write_gitattributes(dir: &Path) -> Result<(), String> {
+    fs::write(
+        dir.join(".gitattributes"),
+        "# Auto detect text files and perform LF normalization\n* text=auto\n",
+    )
+    .map_err(|e| format!("Couldn't write .gitattributes — {e}."))
+}
+
+/// Commit whatever landed as "Initial commit" — nothing staged (a bare repo)
+/// is quietly skipped, not an error.
+fn initial_commit(path: &Path) -> Result<(), String> {
+    crate::stage::stage_all(path)?;
+    let g = Git::new(path);
+    // --quiet exits 1 when there ARE staged changes; 0 means nothing to do.
+    if g.run(["diff", "--cached", "--quiet"]).is_ok() {
+        return Ok(());
+    }
+    crate::commit::commit(path, "Initial commit", "")
+}
+
+/// The current year for `LICENSE` placeholders — civil-from-days, no deps.
+fn current_year() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let y = yoe + era * 400 + if mp < 10 { 0 } else { 1 };
+    y.to_string()
 }
 
 /// The last meaningful lines of a successful command — progress bars and
@@ -285,6 +412,79 @@ mod tests {
             .run(["symbolic-ref", "--short", "HEAD"])
             .unwrap();
         assert_eq!(out.stdout.trim(), "main");
+    }
+
+    /// A repo-local identity so `author()` and the initial commit work
+    /// wherever the suite runs (no global config assumed). Needs an
+    /// existing repo, so tests `create_repo` first — the re-init inside
+    /// `create_repo_with` is a no-op.
+    fn init_with_identity(path: &Path) {
+        create_repo(path).unwrap();
+        let g = Git::new(path);
+        g.run(["config", "user.name", "WackDepot Tests"]).unwrap();
+        g.run(["config", "user.email", "tests@wackdepot.local"])
+            .unwrap();
+    }
+
+    #[test]
+    fn create_repo_with_scaffolds_and_commits() {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("fresh");
+        init_with_identity(&path);
+        let warnings = create_repo_with(
+            &path,
+            &CreateOptions {
+                description: "A neat tool".into(),
+                readme: true,
+                gitignore: Some("Rust".into()),
+                license: Some("MIT License".into()),
+            },
+        )
+        .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            fs::read_to_string(path.join("README.md")).unwrap(),
+            "# fresh\nA neat tool\n"
+        );
+        assert!(
+            fs::read_to_string(path.join(".gitignore"))
+                .unwrap()
+                .contains("target")
+        );
+        assert!(path.join("LICENSE").exists());
+        assert_eq!(
+            fs::read_to_string(path.join(".git/description"))
+                .unwrap()
+                .trim(),
+            "A neat tool"
+        );
+        assert!(
+            fs::read_to_string(path.join(".gitattributes"))
+                .unwrap()
+                .contains("* text=auto")
+        );
+        let g = Git::new(&path);
+        assert_eq!(
+            g.run(["log", "-1", "--format=%s"]).unwrap().stdout.trim(),
+            "Initial commit"
+        );
+        assert_eq!(g.run(["status", "--porcelain"]).unwrap().stdout.trim(), "");
+    }
+
+    #[test]
+    fn create_repo_with_nothing_makes_no_commit() {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("bare");
+        init_with_identity(&path);
+        create_repo_with(&path, &CreateOptions::default()).unwrap();
+        // .gitattributes still lands — but no README/license/description.
+        let g = Git::new(&path);
+        assert_eq!(
+            g.run(["log", "-1", "--format=%s"]).unwrap().stdout.trim(),
+            "Initial commit"
+        );
+        assert!(!path.join("README.md").exists());
+        assert!(!path.join("LICENSE").exists());
     }
 
     #[test]

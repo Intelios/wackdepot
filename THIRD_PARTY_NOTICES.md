@@ -17,6 +17,14 @@ WackDepot builds on and ports patterns from:
   syntax highlighting in `crates/syntax`.
 - **similar** (Apache-2.0) — token diffing for word-level highlights in
   `crates/core/src/words.rs`.
+- **github/gitignore** (CC0-1.0) — the `.gitignore` templates vendored in
+  `crates/core/gitignore/`, indexed by `build.rs` for the create-repository
+  and ignore pickers.
+- **github/choosealicense.com** (CC0-1.0) — the license texts vendored in
+  `crates/core/licenses/` (the set GitHub Desktop's license picker shows,
+  pinned to its submodule revision), indexed by `build.rs`. The license
+  texts themselves carry their own licenses; choosealicense.com's content
+  license is vendored alongside as `crates/core/licenses/CHOOSEALICENSE.md`.
 
 ## Inter (bundled UI font)
 

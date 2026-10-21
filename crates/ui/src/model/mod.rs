@@ -116,6 +116,9 @@ pub enum RepoEvent {
     Notice(Notice),
     /// The model needs the user to confirm something (e.g. force-delete).
     Confirm(ConfirmAction),
+    /// The repo has no remote — the sync action should open the publish
+    /// dialog instead of pushing.
+    Publish,
     Beat(Beat),
 }
 
@@ -542,6 +545,7 @@ impl RepoModel {
             identity: prev.identity.clone(),
             tip_unpushed: prev.tip_unpushed,
             github: prev.github.clone(),
+            remotes: prev.remotes.clone(),
         });
         if let Some(sel) = &self.selection {
             self.selection = selection::repair(sel, &prev, &self.snap);

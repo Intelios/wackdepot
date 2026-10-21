@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use wackdepot_core::{branch, commit, graph, stash, status};
+use wackdepot_core::{branch, commit, graph, remote, stash, status};
 
 /// Commits loaded into History.
 pub const LOG_LIMIT: usize = 400;
@@ -28,6 +28,9 @@ pub struct Snapshot {
     /// `https://github.com/owner/name` when a remote is hosted there —
     /// the base for every "View on GitHub" link.
     pub github: Option<String>,
+    /// Configured remotes — empty means the repo has nowhere to push yet,
+    /// which is what turns "Publish branch" into "Publish repository".
+    pub remotes: Vec<remote::Remote>,
 }
 
 impl Snapshot {
@@ -47,6 +50,7 @@ impl Snapshot {
             identity: commit::author(repo).ok(),
             tip_unpushed: commit::tip_is_unpushed(repo).unwrap_or(false),
             github: super::web::repository_url(repo),
+            remotes: remote::list(repo).unwrap_or_default(),
             status: Some(status),
         })
     }

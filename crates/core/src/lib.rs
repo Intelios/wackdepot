@@ -21,6 +21,7 @@
 //! - [`merge`] — `git merge` / `--squash` and `merge-tree` conflict previews.
 //! - [`sync`] — fetch/pull/push/clone, repo creation.
 //! - [`gitignore`] — vendored .gitignore templates and .gitignore edits.
+//! - [`license`] — vendored license texts (choosealicense.com) and `LICENSE` writes.
 //! - [`stash`] — stash list/push/apply/pop/drop.
 //! - [`repo`] — repo discovery (`is_repo`, `repo_root`), `git_version`.
 //! - [`blob`] — whole-file text for either side of a change (highlighting).
@@ -37,6 +38,7 @@ pub mod diff;
 mod git;
 pub mod gitignore;
 pub mod graph;
+pub mod license;
 pub mod merge;
 pub mod progress;
 pub mod remote;

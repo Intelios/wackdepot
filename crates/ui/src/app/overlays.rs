@@ -18,7 +18,7 @@ use crate::model::{ConfirmAction, Notice, NoticeAction, NoticeKind, RepoModel};
 use crate::motion::{EASE, Motion, POP, id as mid};
 use crate::theme::{ActiveTheme, metrics};
 use crate::views::dialogs::{
-    CloneDialog, ConflictsDialog, MergeDialog, NameDialog, NameKind, NewRepoDialog,
+    CloneDialog, ConflictsDialog, MergeDialog, NameDialog, NameKind, NewRepoDialog, PublishDialog,
 };
 
 /// A discard waiting on its confirm, carrying the diff it applies to.
@@ -35,6 +35,7 @@ pub enum Dialog {
     },
     Clone(Entity<CloneDialog>),
     NewRepo(Entity<NewRepoDialog>),
+    Publish(Entity<PublishDialog>),
     Name(Entity<NameDialog>),
     Merge(Entity<MergeDialog>),
     Conflicts(Entity<ConflictsDialog>),
@@ -126,6 +127,15 @@ impl Overlays {
         let this = cx.entity().downgrade();
         let d = cx.new(|cx| MergeDialog::new(model, this, preselect, window, cx));
         self.dialog = Some(Dialog::Merge(d));
+        cx.notify();
+    }
+
+    /// Publish a remote-less repo on GitHub — create + wire origin + push.
+    pub fn open_publish(&mut self, cx: &mut Context<Self>) {
+        let model = self.model.clone();
+        let this = cx.entity().downgrade();
+        let d = cx.new(|cx| PublishDialog::new(model, this, cx));
+        self.dialog = Some(Dialog::Publish(d));
         cx.notify();
     }
 
@@ -425,6 +435,7 @@ impl Render for Overlays {
                 }
                 Dialog::Clone(d) => d.clone().into_any_element(),
                 Dialog::NewRepo(d) => d.clone().into_any_element(),
+                Dialog::Publish(d) => d.clone().into_any_element(),
                 Dialog::Name(d) => d.clone().into_any_element(),
                 Dialog::Merge(d) => d.clone().into_any_element(),
                 Dialog::Conflicts(d) => d.clone().into_any_element(),
