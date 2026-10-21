@@ -13,8 +13,9 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, FontWeight, IntoElement, KeyBinding,
-    ListAlignment, ListOffset, ListState, MouseButton, ParentElement, Render, ScrollHandle, Styled,
-    StyledText, Window, div, list, point, prelude::*, px,
+    ListAlignment, ListOffset, ListState, MouseButton, ObjectFit, ParentElement, Render,
+    RenderImage, ScrollHandle, Styled, StyledImage, StyledText, Window, div, img, list, point,
+    prelude::*, px,
 };
 use wackdepot_core::diff::{DiffFileStatus, DiffLine, DiffLineKind, FileDiff};
 use wackdepot_core::stage::{ConflictSide, LineSel};
@@ -28,9 +29,10 @@ use crate::components::misc::{Tone, banner, empty_state};
 use crate::components::pill_track::pill_track;
 use crate::components::seam::seam;
 use crate::components::spinner::orbit;
+use crate::model::image::byte_size;
 use crate::model::{
-    Bucket, ConfirmAction, DiffDoc, DiffState, DocKind, RepoEvent, RepoModel, Selection, Tab,
-    same_target,
+    Bucket, ConfirmAction, DiffDoc, DiffState, DocKind, ImageVersions, RepoEvent, RepoModel,
+    Selection, Tab, same_target,
 };
 use crate::theme::{ActiveTheme, Theme, metrics};
 use crate::views::sidebar::{SelectNext, SelectPrev};
@@ -77,6 +79,10 @@ pub struct DiffCard {
     conflict_view: ConflictView,
     tab: Tab,
     remembered: [Option<SavedDiff>; 2],
+    /// Images the previous doc decoded, pending `drop_image` on the next
+    /// render — the sprite-atlas tiles need a `Window` to free, and
+    /// `set_doc` doesn't have one.
+    retired: Vec<Arc<RenderImage>>,
 }
 
 /// The two readings of a conflicted file: the worktree copy with its
@@ -144,6 +150,7 @@ impl DiffCard {
             conflict_view: ConflictView::Markers,
             tab,
             remembered: [None, None],
+            retired: Vec::new(),
         }
     }
 
@@ -163,6 +170,7 @@ impl DiffCard {
         self.tab = tab;
         self.sel.clear();
         self.drag = None;
+        let old = self.doc.take();
         if tab.index() < 2
             && let Some(saved) = self.remembered[tab.index()].take()
         {
@@ -171,6 +179,9 @@ impl DiffCard {
             self.list = saved.list;
             self.strip_scroll = saved.strip_scroll;
             self.body_expanded = saved.body_expanded;
+        }
+        if let Some(old) = old {
+            self.retire_images(&old);
         }
         cx.notify();
     }
@@ -184,11 +195,39 @@ impl DiffCard {
             self.conflict_view = ConflictView::Markers;
         }
         // A refreshed diff for the same file keeps the scroll position; the
-        // line pick is dropped because line numbers may have shifted.
+        // line pick is dropped because line numbers may have shifted. The
+        // incoming doc goes in first so retirement can skip images it
+        // shares with the outgoing one.
+        let old = self.doc.take();
         self.doc = doc;
+        if let Some(old) = old {
+            self.retire_images(&old);
+        }
         self.sel.clear();
         self.rebuild(same_target);
         cx.notify();
+    }
+
+    /// Queue the outgoing doc's decoded images for GPU-tile eviction,
+    /// skipping any `RenderImage` still referenced by an incoming or
+    /// remembered doc (they're `Arc`d per doc, but a switch can restore
+    /// the very same one).
+    fn retire_images(&mut self, old: &DiffDoc) {
+        let retiring: Vec<Arc<RenderImage>> = old
+            .all_images()
+            .map(|i| i.image.clone())
+            .filter(|i| !self.kept_image(i))
+            .collect();
+        self.retired.extend(retiring);
+    }
+
+    /// Whether `image` is still owned by a live or remembered doc.
+    fn kept_image(&self, image: &Arc<RenderImage>) -> bool {
+        let in_doc = |d: &Option<Arc<DiffDoc>>| {
+            d.as_ref()
+                .is_some_and(|d| d.all_images().any(|i| Arc::ptr_eq(&i.image, image)))
+        };
+        in_doc(&self.doc) || self.remembered.iter().flatten().any(|s| in_doc(&s.doc))
     }
 
     /// The split preference changed (View › Split Diff).
@@ -725,7 +764,15 @@ impl DiffCard {
                 .old_path
                 .as_ref()
                 .map(|o| (format!("Renamed from {o}"), t.pill(), t.text_soft)),
-            DiffFileStatus::Binary => Some(("Binary".to_string(), t.pill(), t.text_soft)),
+            DiffFileStatus::Binary => Some((
+                if self.has_images() {
+                    "Image".to_string()
+                } else {
+                    "Binary".to_string()
+                },
+                t.pill(),
+                t.text_soft,
+            )),
             DiffFileStatus::Conflicted => {
                 Some(("Conflicted".to_string(), t.sem.warning_bg, t.sem.warning))
             }
@@ -740,6 +787,8 @@ impl DiffCard {
             .bg(t.surface)
             .child(accent_mark(if file.status == DiffFileStatus::Conflicted {
                 "conflict"
+            } else if file.status == DiffFileStatus::Binary && self.has_images() {
+                "image"
             } else {
                 "file-code"
             }))
@@ -793,7 +842,8 @@ impl DiffCard {
             let entity = cx.entity();
             return pill_track("conflict-view")
                 .height(26.)
-                .item("Markers")
+                // A binary file has no markers — what's on disk is the file.
+                .item(if file.is_binary { "On disk" } else { "Markers" })
                 .item("Ours ↔ Theirs")
                 .selected(usize::from(self.conflict_view == ConflictView::Sides))
                 .on_select(move |i, _, cx| {
@@ -916,6 +966,122 @@ impl DiffCard {
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(sha.clone()));
                     }))
                     .child(self.view_controls(cx)),
+            )
+            .into_any_element()
+    }
+
+    /// Whether the current doc carries a rendered image anywhere.
+    fn has_images(&self) -> bool {
+        self.doc
+            .as_ref()
+            .is_some_and(|d| d.images.any() || d.sides.as_ref().is_some_and(|s| s.images.any()))
+    }
+
+    /// An image diff: the sides that exist, each centered in its own pane
+    /// over a white matte (transparency reads, and it stays honest on the
+    /// dark app), with a label and a dimensions × size caption.
+    fn image_panes(
+        &self,
+        images: &ImageVersions,
+        labels: (&'static str, &'static str),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = cx.theme().clone();
+        let mut row = div().size_full().bg(t.well).flex().p(px(14.)).gap(px(14.));
+        let mut shown = Vec::new();
+        for (side, label) in [
+            (images.old.as_ref(), labels.0),
+            (images.new.as_ref(), labels.1),
+        ] {
+            if let Some(side) = side {
+                shown.push((side, label));
+            }
+        }
+        for (i, (side, label)) in shown.into_iter().enumerate() {
+            if i > 0 {
+                row = row.child(div().w(px(1.)).h_full().bg(t.border));
+            }
+            row = row.child(Self::image_pane(side, label, i, &t));
+        }
+        row.into_any_element()
+    }
+
+    /// One image pane: the image on its matte, then label + caption.
+    fn image_pane(
+        side: &crate::model::SideImage,
+        label: &'static str,
+        key: usize,
+        t: &Theme,
+    ) -> AnyElement {
+        let caption = format!(
+            "{}×{} · {}",
+            side.dims.0,
+            side.dims.1,
+            byte_size(side.bytes)
+        );
+        div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .relative()
+                            .overflow_hidden()
+                            .max_w_full()
+                            .max_h_full()
+                            .rounded(px(8.))
+                            .bg(t.sem.white)
+                            .child(
+                                img(side.image.clone())
+                                    .id(("diff-img", key))
+                                    .object_fit(ObjectFit::Contain)
+                                    .max_w_full()
+                                    .max_h_full()
+                                    .flex_none(),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(t.sem.black.opacity(0.12)),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.))
+                    .text_size(px(11.))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(t.text_dim)
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .font_family(t.mono.clone())
+                            .text_color(t.text_faint)
+                            .child(caption),
+                    ),
             )
             .into_any_element()
     }
@@ -1113,6 +1279,10 @@ impl DiffCard {
             return self.conflicted_body(file, cx);
         }
         if file.is_binary {
+            let images = &self.doc.as_ref().unwrap().images;
+            if images.any() {
+                return self.image_panes(images, ("Before", "After"), cx);
+            }
             return div()
                 .size_full()
                 .flex()
@@ -1290,9 +1460,24 @@ impl DiffCard {
         b = b.action(resolve);
         let strip = div().flex_none().p(px(10.)).child(b);
 
-        // The body follows the picked view — markers or ours↔theirs.
+        // The body follows the picked view — the file on disk or
+        // ours↔theirs — as images when it decodes, else the text views.
+        let doc = self.doc.as_ref().unwrap();
+        let images = match self.conflict_view {
+            ConflictView::Sides => doc.sides.as_ref().map_or(&doc.images, |s| &s.images),
+            ConflictView::Markers => &doc.images,
+        };
         let shown = self.shown_file().unwrap_or(file);
-        let content: AnyElement = if shown.is_binary {
+        let content: AnyElement = if images.any() {
+            self.image_panes(
+                images,
+                match self.conflict_view {
+                    ConflictView::Sides => ("Ours", "Theirs"),
+                    ConflictView::Markers => ("Before", "On disk"),
+                },
+                cx,
+            )
+        } else if shown.is_binary {
             div()
                 .size_full()
                 .flex()
@@ -1412,7 +1597,12 @@ impl DiffCard {
 
 /// Row background, edge colour and sigil for a line kind.
 impl Render for DiffCard {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Free the previous doc's image textures from the sprite atlas —
+        // deferred here because eviction needs the window.
+        for image in self.retired.drain(..) {
+            cx.drop_image(image, Some(window));
+        }
         let t = cx.theme().clone();
         let model = self.model.read(cx);
         let loading = matches!(model.diff, DiffState::Loading);

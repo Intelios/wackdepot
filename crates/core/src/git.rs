@@ -22,6 +22,23 @@ pub struct GitOutput {
     pub stderr: String,
 }
 
+/// The captured result of a git invocation that emits binary data
+/// (`cat-file -p` on an image blob); stdout stays undecoded.
+#[derive(Debug)]
+pub struct GitBytes {
+    /// Exit code, or -1 when the process was killed by a signal.
+    pub status: i32,
+    /// stdout, raw bytes.
+    pub stdout: Vec<u8>,
+}
+
+impl GitBytes {
+    /// Whether git exited with status 0.
+    pub fn ok(&self) -> bool {
+        self.status == 0
+    }
+}
+
 impl GitOutput {
     /// Whether git exited with status 0.
     pub fn ok(&self) -> bool {
@@ -117,6 +134,23 @@ impl Git {
             let _ = stdin.write_all(input.as_bytes());
         }
         finish(child.wait_with_output())
+    }
+
+    /// Run `git <args>` like [`Git::try_run`], but keep stdout as raw bytes —
+    /// for commands whose output isn't text (a `cat-file` on a binary blob).
+    /// Non-zero exits are still reported through [`GitBytes::ok`].
+    pub fn try_run_bytes<I, S>(&self, args: I) -> Result<GitBytes, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut cmd = self.command();
+        cmd.args(args);
+        let out = cmd.output().map_err(spawn_err)?;
+        Ok(GitBytes {
+            status: out.status.code().unwrap_or(-1),
+            stdout: out.stdout,
+        })
     }
 
     /// Run `git <args>`; `Err` when the exit code is non-zero. The message is

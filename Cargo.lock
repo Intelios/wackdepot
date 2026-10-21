@@ -6356,6 +6356,7 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "gpui_platform",
+ "image",
  "notify",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -6364,6 +6365,7 @@ dependencies = [
  "raw-window-handle",
  "serde",
  "serde_json",
+ "smallvec",
  "tempfile",
  "unicode-segmentation",
  "wackdepot-core",

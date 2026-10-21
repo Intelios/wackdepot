@@ -11,6 +11,7 @@ use wackdepot_core::diff::{self, CommitFile, DiffFileStatus, DiffOptions, FileDi
 use wackdepot_core::words::{self, Ranges};
 use wackdepot_syntax::LineSpans;
 
+use super::image::{ImageVersions, pair as image_pair};
 use super::selection::Selection;
 use super::snapshot::Bucket;
 
@@ -31,9 +32,23 @@ pub struct DiffDoc {
     /// Syntax spans for the whole old / new file, by 0-based line.
     pub old_hl: Option<Arc<Vec<LineSpans>>>,
     pub new_hl: Option<Arc<Vec<LineSpans>>>,
+    /// Decoded images for a binary file: old ↔ new for a plain diff, or
+    /// just the worktree copy (as `new`) for a conflicted file's marker
+    /// view. `images.any() == false` → the binary stub shows.
+    pub images: ImageVersions,
 }
 
 impl DiffDoc {
+    /// Every decoded image this doc holds, for GPU-tile eviction.
+    pub fn all_images(&self) -> impl Iterator<Item = &super::image::SideImage> {
+        self.images.iter().chain(
+            self.sides
+                .as_ref()
+                .into_iter()
+                .flat_map(|s| s.images.iter()),
+        )
+    }
+
     /// Whether hunks and lines of this diff can be staged/discarded.
     /// Conflicted diffs show the file's markers, not a patch — there's
     /// nothing to apply, only "Mark resolved" on the whole file.
@@ -80,6 +95,8 @@ pub struct SidesDoc {
     pub words: Vec<Vec<Option<Ranges>>>,
     pub old_hl: Option<Arc<Vec<LineSpans>>>,
     pub new_hl: Option<Arc<Vec<LineSpans>>>,
+    /// The two index stages decoded as images, for a conflicted image file.
+    pub images: ImageVersions,
 }
 
 impl SidesDoc {
@@ -151,25 +168,46 @@ pub fn load(
     match sel {
         Selection::File { path, bucket } => {
             let file = diff::diff_with(repo, path, bucket.side(), &opts)?;
+            let old_path = file.old_path.as_deref().filter(|o| *o != path.as_str());
             let (old_hl, new_hl) = if file.is_binary {
                 (None, None)
             } else {
-                let old_path = file.old_path.as_deref().filter(|o| *o != path.as_str());
                 highlight_versions(
                     path,
                     blob::file_versions(repo, path, old_path, bucket.side()),
                 )
             };
+            // Binary files carry raw bytes instead of hunks — try decoding
+            // them as images. A conflicted file's two-way diff is index
+            // stage vs. worktree, so its marker view shows what's on disk;
+            // ours↔theirs belongs to the sides doc below.
+            let conflicted = file.status == DiffFileStatus::Conflicted;
+            let images = if file.is_binary {
+                let v = if conflicted {
+                    blob::worktree_byte_versions(repo, path)
+                } else {
+                    blob::file_byte_versions(repo, path, old_path, bucket.side())
+                };
+                image_pair(&v)
+            } else {
+                ImageVersions::default()
+            };
             // A conflicted file's other view: ours↔theirs straight from the
-            // index stages, highlighted from the stage blobs.
-            let sides = if file.status == DiffFileStatus::Conflicted {
+            // index stages, highlighted (or decoded) from the stage blobs.
+            let sides = if conflicted {
                 diff::sides_diff(repo, path)?.map(|d| {
                     let (old, new) = highlight_versions(path, blob::conflict_versions(repo, path));
+                    let images = if d.is_binary {
+                        image_pair(&blob::conflict_byte_versions(repo, path))
+                    } else {
+                        ImageVersions::default()
+                    };
                     SidesDoc {
                         words: word_ranges(&d),
                         file: d,
                         old_hl: old,
                         new_hl: new,
+                        images,
                     }
                 })
             } else {
@@ -184,6 +222,7 @@ pub fn load(
                 ignore_whitespace: opts.ignore_whitespace,
                 old_hl,
                 new_hl,
+                images,
             })
         }
         Selection::Commit { sha, file } => {
@@ -217,6 +256,13 @@ pub fn load(
                 ),
                 _ => (None, None),
             };
+            let images =
+                match (pick, &file) {
+                    (Some(c), Some(f)) if f.is_binary => image_pair(
+                        &blob::commit_file_byte_versions(repo, sha, &c.path, c.old_path.as_deref()),
+                    ),
+                    _ => ImageVersions::default(),
+                };
             Ok(DiffDoc {
                 sides: None,
                 words: file.as_ref().map(word_ranges).unwrap_or_default(),
@@ -229,6 +275,7 @@ pub fn load(
                 ignore_whitespace: opts.ignore_whitespace,
                 old_hl,
                 new_hl,
+                images,
             })
         }
     }
@@ -236,4 +283,88 @@ pub fn load(
 
 fn word_ranges(file: &FileDiff) -> Vec<Vec<Option<Ranges>>> {
     file.hunks.iter().map(words::hunk_word_ranges).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::selection::Selection;
+    use wackdepot_core::Git;
+
+    /// A real repo in a tempdir, like core's `testutil` (crate-private).
+    fn temp_repo() -> (tempfile::TempDir, Git) {
+        let dir = tempfile::tempdir().unwrap();
+        let g = Git::new(dir.path());
+        g.run(["init", "-b", "main"]).unwrap();
+        g.run(["config", "user.name", "WackDepot Test"]).unwrap();
+        g.run(["config", "user.email", "test@wackdepot.local"])
+            .unwrap();
+        (dir, g)
+    }
+
+    fn png(w: u32, h: u32, c: [u8; 4]) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(w, h, image::Rgba(c)))
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn a_changed_png_loads_as_an_image_diff() {
+        let (dir, g) = temp_repo();
+        std::fs::write(dir.path().join("pic.png"), png(8, 8, [255, 0, 0, 255])).unwrap();
+        g.run(["add", "pic.png"]).unwrap();
+        wackdepot_core::commit::commit(dir.path(), "add pic", "").unwrap();
+        std::fs::write(dir.path().join("pic.png"), png(16, 4, [0, 0, 255, 255])).unwrap();
+
+        let doc = load(
+            dir.path(),
+            &Selection::File {
+                path: "pic.png".into(),
+                bucket: Bucket::Unstaged,
+            },
+            &[],
+            DiffOptions::default(),
+        )
+        .unwrap();
+        let file = doc.file.as_ref().unwrap();
+        assert!(file.is_binary);
+        assert!(doc.images.any());
+        assert_eq!(doc.images.old.as_ref().unwrap().dims, (8, 8));
+        assert_eq!(doc.images.new.as_ref().unwrap().dims, (16, 4));
+
+        // The same file seen through history diffs the same way.
+        let log = wackdepot_core::commit::list_log(dir.path(), 5).unwrap();
+        let sha = log[0].sha.clone();
+        let doc = load(
+            dir.path(),
+            &Selection::Commit { sha, file: None },
+            &log,
+            DiffOptions::default(),
+        )
+        .unwrap();
+        assert!(doc.images.any());
+        assert!(doc.images.old.is_none()); // added in this commit
+        assert_eq!(doc.images.new.as_ref().unwrap().dims, (8, 8));
+    }
+
+    #[test]
+    fn an_untrackable_binary_stays_a_stub() {
+        let (dir, _g) = temp_repo();
+        // NUL bytes → binary, and nothing that decodes to an image.
+        std::fs::write(dir.path().join("data.bin"), [0u8, 1, 2, 0, 3, 7]).unwrap();
+        let doc = load(
+            dir.path(),
+            &Selection::File {
+                path: "data.bin".into(),
+                bucket: Bucket::Untracked,
+            },
+            &[],
+            DiffOptions::default(),
+        )
+        .unwrap();
+        assert!(doc.file.as_ref().unwrap().is_binary);
+        assert!(!doc.images.any());
+    }
 }

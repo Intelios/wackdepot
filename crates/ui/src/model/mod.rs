@@ -4,6 +4,7 @@
 
 pub mod confirm;
 pub mod diff_load;
+pub mod image;
 mod ops;
 mod optimistic;
 pub mod pulls;
@@ -26,6 +27,7 @@ use crate::watcher::{self, RepoWatcher};
 
 pub use confirm::ConfirmAction;
 pub use diff_load::{DiffDoc, DiffState, DocKind, SidesDoc};
+pub use image::{ImageVersions, SideImage};
 pub use selection::{Selection, Tab};
 pub use snapshot::{Bucket, Snapshot};
 pub use web::GitHubTarget;
