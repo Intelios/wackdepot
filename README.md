@@ -74,7 +74,11 @@ WackDepot uses the `git` already installed on your Mac. Your existing config, SS
 
 ## Getting it
 
-WackDepot is in early development, so expect some rough edges. Ready-made downloads will appear on the [Releases](https://github.com/Intelios/wackdepot/releases) page. Until then, you can build it yourself if you have [Rust](https://rustup.rs) installed:
+Grab the disk image from the [Releases](https://github.com/Intelios/wackdepot/releases/latest) page. WackDepot is stable at 1.0 — a finished app rather than a work in progress, so it won't see a stream of new features, but bugs will still get fixed.
+
+The build isn't notarized, so the first launch may be blocked: open System Settings › Privacy & Security and choose Open Anyway.
+
+You can also build it yourself if you have [Rust](https://rustup.rs) installed:
 
 ```sh
 git clone https://github.com/Intelios/wackdepot.git
