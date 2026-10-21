@@ -85,7 +85,7 @@ open dist/WackDepot.app
 
 ## Part of the Wack family
 
-WackDepot is the sibling of [WackCode](https://github.com/Intelios/WackCode), an agentic coding app for macOS where AI agents work on your projects with you. They share the same design and the same love of native, lightweight apps. WackCode writes the code, and WackDepot is a nice place to review and commit it.
+WackDepot is the sibling of [WackCode](https://github.com/Intelios/wackcode), a playful, local-first Mac app for the Pi coding agent, where an AI agent works on your projects with you. Bring your own model, no account needed. The two share the same design language, so they feel at home next to each other. WackCode writes the code, and WackDepot is a nice place to review and commit it.
 
 ## Feedback
 
