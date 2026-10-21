@@ -36,7 +36,13 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # The production OAuth client is baked into the bundle from repo
+      # secrets (see docs/GITHUB_SETUP.md; native-app client config, not a
+      # server credential).
       - name: Build app
+        env:
+          WACKDEPOT_GITHUB_CLIENT_ID: ${{ secrets.WACKDEPOT_GITHUB_CLIENT_ID }}
+          WACKDEPOT_GITHUB_CLIENT_SECRET: ${{ secrets.WACKDEPOT_GITHUB_CLIENT_SECRET }}
         run: sh scripts/bundle.sh
 
       # The bundled plist carries the workspace version; stamp the release tag
