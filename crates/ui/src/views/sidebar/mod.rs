@@ -27,7 +27,7 @@ use composer::Composer;
 
 actions!(
     sidebar,
-    [SelectPrev, SelectNext, ToggleStage, DiscardSelected]
+    [SelectPrev, SelectNext, ToggleInclude, DiscardSelected]
 );
 
 pub fn bind_keys(cx: &mut gpui::App) {
@@ -39,7 +39,7 @@ pub fn bind_keys(cx: &mut gpui::App) {
         // own arrows at a deeper context and win.
         gpui::KeyBinding::new("up", SelectPrev, Some("Workspace")),
         gpui::KeyBinding::new("down", SelectNext, Some("Workspace")),
-        gpui::KeyBinding::new("space", ToggleStage, Some("FileList")),
+        gpui::KeyBinding::new("space", ToggleInclude, Some("FileList")),
         gpui::KeyBinding::new("cmd-backspace", DiscardSelected, Some("FileList")),
     ]);
 }
@@ -70,6 +70,10 @@ pub struct SidebarView {
     collapsed: HashSet<Bucket>,
     /// Where each row sat last layout — the "first" of FLIP.
     prev_y: HashMap<RowKey, f32>,
+    /// The row the cursor is over — drives the mounted hover pill (a
+    /// `group_hover` reveal can't work: an occluding child un-hovers the
+    /// group, and an invisible pill would still eat clicks).
+    hot: Option<RowKey>,
     /// The first layout for this repo has happened (later rows animate in).
     seen: bool,
     context: Option<(Point<Pixels>, ContextTarget)>,
@@ -89,6 +93,7 @@ impl SidebarView {
                 this.prev_y.clear();
                 this.seen = false;
                 this.context = None;
+                this.hot = None;
                 cx.notify();
             }
             RepoEvent::Snapshot | RepoEvent::Selection | RepoEvent::Busy => cx.notify(),
@@ -106,6 +111,7 @@ impl SidebarView {
             history_scroll: UniformListScrollHandle::new(),
             collapsed: HashSet::new(),
             prev_y: HashMap::new(),
+            hot: None,
             seen: false,
             context: None,
         }

@@ -12,7 +12,7 @@ pub mod selection;
 pub mod snapshot;
 pub mod web;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use gpui::{App, Context, EventEmitter};
 use wackdepot_core::diff::DiffOptions;
 use wackdepot_core::progress::Progress;
-use wackdepot_core::status;
+use wackdepot_core::status::{self, FileChange};
 
 use crate::app::prefs;
 use crate::watcher::{self, RepoWatcher};
@@ -169,6 +169,11 @@ pub struct RepoModel {
     pub loaded: bool,
     pub tab: Tab,
     pub selection: Option<Selection>,
+    /// Files the user unchecked — out of the next commit, however they
+    /// came to be there (staged or not). Everything else that's changed
+    /// is in; a path disappears from here the moment it isn't a change
+    /// any more.
+    pub excluded: HashSet<String>,
     remembered: [Option<Selection>; 3],
     pub diff: DiffState,
     diff_gen: u64,
@@ -200,6 +205,7 @@ impl RepoModel {
             loaded: false,
             tab: Tab::Changes,
             selection: None,
+            excluded: HashSet::new(),
             remembered: [None, None, None],
             diff: DiffState::Empty,
             diff_gen: 0,
@@ -245,6 +251,54 @@ impl RepoModel {
             },
             None => String::new(),
         }
+    }
+
+    // ── The commit selection ─────────────────────────────────────────
+
+    /// Every file the Changes group lists, as `(bucket, change)` in one
+    /// sorted run — staged, unstaged and untracked share the list now
+    /// that the checkbox (not the bucket) says what's in the commit. A
+    /// path on both sides of the index (partially staged) appears once,
+    /// under Unstaged so its diff shows the part still pending.
+    pub fn commit_files(&self) -> Vec<(Bucket, FileChange)> {
+        let Some(s) = self.snap.status.as_ref() else {
+            return Vec::new();
+        };
+        let mut out: Vec<(Bucket, FileChange)> = s
+            .unstaged
+            .iter()
+            .map(|f| (Bucket::Unstaged, f.clone()))
+            .chain(s.untracked.iter().map(|f| (Bucket::Untracked, f.clone())))
+            .chain(
+                s.staged
+                    .iter()
+                    .filter(|f| !s.unstaged.iter().any(|u| u.path == f.path))
+                    .map(|f| (Bucket::Staged, f.clone())),
+            )
+            .collect();
+        out.sort_by(|a, b| a.1.path.cmp(&b.1.path));
+        out
+    }
+
+    /// Paths staged AND with worktree changes left — the indeterminate
+    /// checkboxes.
+    pub fn partials(&self) -> HashSet<String> {
+        let Some(s) = self.snap.status.as_ref() else {
+            return HashSet::new();
+        };
+        s.staged
+            .iter()
+            .filter(|f| s.unstaged.iter().any(|u| u.path == f.path))
+            .map(|f| f.path.clone())
+            .collect()
+    }
+
+    /// How many files the next commit picks up right now.
+    pub fn included_count(&self) -> usize {
+        self.commit_files()
+            .iter()
+            .filter(|(_, f)| !self.excluded.contains(&f.path))
+            .count()
     }
 
     /// Why merging can't start right now, as a user-facing sentence —
@@ -303,6 +357,7 @@ impl RepoModel {
         self.snap = Arc::default();
         self.loaded = false;
         self.selection = None;
+        self.excluded.clear();
         self.remembered = [None, None, None];
         self.diff = DiffState::Empty;
         self.watcher = watcher::watch(&root);
@@ -324,6 +379,7 @@ impl RepoModel {
             self.snap = Arc::default();
             self.loaded = false;
             self.selection = None;
+            self.excluded.clear();
             self.diff = DiffState::Empty;
             self.watcher = None;
             cx.emit(RepoEvent::Opened);
@@ -401,6 +457,16 @@ impl RepoModel {
             if let Some(sel) = slot.as_ref() {
                 *slot = selection::repair(sel, &prev, &self.snap);
             }
+        }
+        // An exclusion ends when the file stops being a change.
+        if let Some(s) = self.snap.status.as_ref() {
+            self.excluded.retain(|p| {
+                s.staged.iter().any(|f| &f.path == p)
+                    || s.unstaged.iter().any(|f| &f.path == p)
+                    || s.untracked.iter().any(|f| &f.path == p)
+            });
+        } else {
+            self.excluded.clear();
         }
         cx.emit(RepoEvent::Snapshot);
         let changed = repaired != self.selection;

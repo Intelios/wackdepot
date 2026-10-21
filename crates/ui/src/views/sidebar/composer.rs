@@ -89,14 +89,16 @@ impl Composer {
         cx.notify();
     }
 
-    fn staged(&self, cx: &App) -> usize {
-        self.model.read(cx).snap.bucket(Bucket::Staged).len()
+    /// Files the commit button will pick up — the checked ones.
+    fn included(&self, cx: &App) -> usize {
+        self.model.read(cx).included_count()
     }
 
     pub fn can_commit(&self, cx: &App) -> bool {
         let m = self.model.read(cx);
         let has_summary = !self.summary.read(cx).content().trim().is_empty();
-        has_summary && (self.staged(cx) > 0 || self.amend) && m.busy.is_none()
+        let conflicts = !m.snap.bucket(Bucket::Conflicted).is_empty();
+        has_summary && (self.included(cx) > 0 || self.amend) && !conflicts && m.busy.is_none()
     }
 
     /// ⌘↩ and the commit pill.
@@ -185,7 +187,8 @@ impl Render for Composer {
         let committing = model.busy == Some(BusyOp::Commit);
         let tip_unpushed = model.snap.tip_unpushed;
         let has_commits = !model.snap.log.is_empty();
-        let staged = self.staged(cx);
+        let included = self.included(cx);
+        let conflicts = !model.snap.bucket(Bucket::Conflicted).is_empty();
         let can = self.can_commit(cx);
         let focused = self.summary.read(cx).is_focused(window)
             || self.description.read(cx).is_focused(window)
@@ -195,10 +198,12 @@ impl Render for Composer {
             "Committing…".to_string()
         } else if self.amend {
             "Amend last commit".to_string()
-        } else if staged == 0 {
-            "Stage changes to commit".to_string()
+        } else if conflicts {
+            "Resolve conflicts to commit".to_string()
+        } else if included == 0 {
+            "Check files to commit".to_string()
         } else {
-            format!("Commit {staged} to {branch}")
+            format!("Commit {included} to {branch}")
         };
 
         let entity = cx.entity();

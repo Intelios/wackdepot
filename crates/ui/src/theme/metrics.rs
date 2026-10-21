@@ -20,6 +20,10 @@ pub const GROUP_H: f32 = 30.0;
 pub const CODE_ROW_H: f32 = 20.0;
 
 pub const RADIUS_CARD: f32 = 14.0;
+/// The radius children paint inside a `RADIUS_CARD` + 1px border card —
+/// gpui clips overflow to a rectangle, so the card's own rounded fill and
+/// rim show in the corners only if content corners round to this too.
+pub const RADIUS_CARD_INNER: f32 = RADIUS_CARD - 1.0;
 pub const RADIUS_COMPOSER: f32 = 18.0;
 pub const RADIUS_POPOVER: f32 = 14.0;
 pub const RADIUS_MENU_ROW: f32 = 9.0;

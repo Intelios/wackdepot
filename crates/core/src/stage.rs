@@ -10,7 +10,7 @@
 //! | `discard_hunk` | `-R`          | the worktree |
 //! | `unstage_hunk` | `--cached -R` | the index |
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -417,6 +417,65 @@ pub fn discard_file(repo: &Path, path: &str) -> Result<(), String> {
     }
     // git < 2.23: `checkout --` is the same worktree restore.
     g.run(["checkout", "--", path])?;
+    Ok(())
+}
+
+/// Throw away ALL of `path`'s changes — worktree and index alike, back to
+/// HEAD (`git restore --staged --worktree`). A file HEAD doesn't know
+/// (untracked, or added to the index only) leaves the index then goes to
+/// the trash folder.
+pub fn discard_fully(repo: &Path, path: &str) -> Result<(), String> {
+    let g = Git::new(repo);
+    let in_index = g
+        .try_run(["ls-files", "--error-unmatch", "--", path])
+        .map(|o| o.ok())
+        .unwrap_or(false);
+    let in_head = g
+        .try_run(["cat-file", "-e", &format!("HEAD:./{path}")])
+        .map(|o| o.ok())
+        .unwrap_or(false);
+    if !in_head {
+        if in_index {
+            unstage_file(repo, path)?;
+        }
+        trash_file(repo, path)?;
+        return Ok(());
+    }
+    if g.try_run(["restore", "--staged", "--worktree", "--", path])?
+        .ok()
+    {
+        return Ok(());
+    }
+    g.run(["checkout", "HEAD", "--", path])?;
+    Ok(())
+}
+
+/// Sync the index with the commit selection right before committing:
+/// everything changed is staged unless `excluded` marks it out, and an
+/// excluded path that's in the index is fully unstaged. A path staged
+/// only in part keeps its staged hunks — "include this file" means what
+/// the user picked for it, never a secret `add` of the rest.
+pub fn stage_for_commit(repo: &Path, excluded: &HashSet<String>) -> Result<(), String> {
+    let s = crate::status::status(repo)?;
+    let stage: Vec<String> = s
+        .unstaged
+        .iter()
+        .chain(s.untracked.iter())
+        .filter(|f| !excluded.contains(&f.path))
+        // Partially staged stays partial — its staged side is the pick.
+        .filter(|f| !s.staged.iter().any(|g| g.path == f.path))
+        .map(|f| f.path.clone())
+        .collect();
+    let unstage: Vec<String> = s
+        .staged
+        .iter()
+        .filter(|f| excluded.contains(&f.path))
+        .map(|f| f.path.clone())
+        .collect();
+    stage_paths(repo, &stage)?;
+    for p in &unstage {
+        unstage_file(repo, p)?;
+    }
     Ok(())
 }
 
@@ -939,6 +998,67 @@ mod tests {
         assert_eq!(unmerged(dir.path()), 0);
         let s = status(dir.path()).unwrap();
         assert!(s.staged.iter().any(|f| f.path == "f.txt" && f.x == 'D'));
+    }
+
+    #[test]
+    fn stage_for_commit_syncs_the_index_to_the_selection() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "keep.txt", "1\n");
+        write_file(dir.path(), "drop.txt", "2\n");
+        let base: Vec<String> = (1..=20).map(|i| format!("l{i}")).collect();
+        write_file(dir.path(), "partial.txt", &(base.join("\n") + "\n"));
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "base", "").unwrap();
+
+        write_file(dir.path(), "keep.txt", "1 changed\n");
+        write_file(dir.path(), "drop.txt", "2 changed\n");
+        write_file(dir.path(), "new.txt", "n\n");
+        // drop.txt arrives staged; partial.txt gets only its first of two
+        // hunks staged.
+        stage_file(dir.path(), "drop.txt").unwrap();
+        let mut partial: Vec<String> = (1..=20).map(|i| format!("l{i}")).collect();
+        partial[0] = "TOP".into();
+        partial[19] = "BOTTOM".into();
+        write_file(dir.path(), "partial.txt", &(partial.join("\n") + "\n"));
+        let d = diff(dir.path(), "partial.txt", DiffSide::Unstaged).unwrap();
+        assert_eq!(d.hunks.len(), 2);
+        stage_hunk(dir.path(), &d, &d.hunks[0]).unwrap();
+
+        let excluded: HashSet<String> = ["drop.txt".to_string()].into_iter().collect();
+        stage_for_commit(dir.path(), &excluded).unwrap();
+
+        let staged = staged_names(dir.path());
+        assert!(staged.contains(&"keep.txt".to_string()));
+        assert!(staged.contains(&"new.txt".to_string()));
+        // The excluded file left the index entirely…
+        assert!(!staged.contains(&"drop.txt".to_string()));
+        // …but its worktree edit is still there.
+        assert_eq!(read_file(dir.path(), "drop.txt"), "2 changed\n");
+        // The partially staged file keeps exactly its pick.
+        let cached_partial = g.run(["show", ":partial.txt"]).unwrap().stdout;
+        assert!(cached_partial.contains("TOP"));
+        assert!(!cached_partial.contains("BOTTOM"));
+    }
+
+    #[test]
+    fn discard_fully_covers_index_and_worktree() {
+        let (dir, _g) = temp_repo();
+        write_file(dir.path(), "t.txt", "orig\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "init", "").unwrap();
+        write_file(dir.path(), "t.txt", "dirty\n");
+        stage_file(dir.path(), "t.txt").unwrap();
+        discard_fully(dir.path(), "t.txt").unwrap();
+        let s = status(dir.path()).unwrap();
+        assert!(s.staged.is_empty() && s.unstaged.is_empty());
+        assert_eq!(read_file(dir.path(), "t.txt"), "orig\n");
+
+        // Staged for addition: HEAD has no version, so it goes to trash.
+        write_file(dir.path(), "fresh.txt", "x\n");
+        stage_file(dir.path(), "fresh.txt").unwrap();
+        discard_fully(dir.path(), "fresh.txt").unwrap();
+        assert!(!dir.path().join("fresh.txt").exists());
+        assert!(status(dir.path()).unwrap().staged.is_empty());
     }
 
     #[test]

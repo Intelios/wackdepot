@@ -212,8 +212,11 @@ impl RenderOnce for Button {
             .text_size(px(text_size))
             .font_weight(FontWeight::MEDIUM)
             .bg(bg)
-            .text_color(fg)
-            .occlude();
+            .text_color(fg);
+        // No `.occlude()` here: a button that blocks hitboxes painted
+        // behind it also un-hovers a `group_hover` parent — hover pills
+        // would vanish under the cursor. Floating surfaces that need to
+        // block (popovers, dialog scrims, pills) occlude themselves.
         if self.circle {
             el = el.w(px(h));
         } else {

@@ -9,12 +9,12 @@ use gpui::{
 };
 
 use super::{
-    ContextTarget, DiscardSelected, RowKey, SelectNext, SelectPrev, SidebarView, ToggleStage,
+    ContextTarget, DiscardSelected, RowKey, SelectNext, SelectPrev, SidebarView, ToggleInclude,
 };
 use wackdepot_core::stage::ConflictSide;
 
 use crate::components::button::icon_button;
-use crate::components::mark::status_mark;
+use crate::components::mark::{Check, checkbox, status_mark};
 use crate::components::menu::{menu_row, menu_separator, popover};
 use crate::components::misc::{empty_state, rolling_count};
 use crate::components::seam::trail;
@@ -29,49 +29,80 @@ struct Row {
     h: f32,
 }
 
+/// The pseudo-bucket standing in for the merged Changes group in
+/// `RowKey::Group` and `collapsed` — the real buckets merged into it.
+const CHANGES_GROUP: Bucket = Bucket::Unstaged;
+
 impl SidebarView {
     /// Every row's key and position, top to bottom.
     fn changes_layout(&self, cx: &Context<Self>) -> (Vec<Row>, f32) {
-        let snap = self.model.read(cx).snap.clone();
+        let model = self.model.read(cx);
+        let conflicts = model.snap.bucket(Bucket::Conflicted).len();
         let mut rows = Vec::new();
         let mut y = 0.0;
-        for b in Bucket::ALL {
-            let files = snap.bucket(b);
+        let group = |b: Bucket,
+                     files: &[(Bucket, wackdepot_core::status::FileChange)],
+                     rows: &mut Vec<Row>,
+                     y: &mut f32| {
             if files.is_empty() {
-                continue;
+                return;
             }
             if !rows.is_empty() {
-                y += 6.0;
+                *y += 6.0;
             }
             rows.push(Row {
                 key: RowKey::Group(b),
-                y,
+                y: *y,
                 h: metrics::GROUP_H,
             });
-            y += metrics::GROUP_H;
+            *y += metrics::GROUP_H;
             if self.collapsed.contains(&b) {
-                continue;
+                return;
             }
-            for f in files {
+            for (fb, f) in files {
                 rows.push(Row {
-                    key: RowKey::File(f.path.clone(), b),
-                    y,
+                    key: RowKey::File(f.path.clone(), *fb),
+                    y: *y,
                     h: metrics::ROW_H,
                 });
-                y += metrics::ROW_H;
+                *y += metrics::ROW_H;
             }
+        };
+        if conflicts > 0 {
+            let list: Vec<(Bucket, wackdepot_core::status::FileChange)> = model
+                .snap
+                .bucket(Bucket::Conflicted)
+                .iter()
+                .map(|f| (Bucket::Conflicted, f.clone()))
+                .collect();
+            group(Bucket::Conflicted, &list, &mut rows, &mut y);
         }
+        group(CHANGES_GROUP, &model.commit_files(), &mut rows, &mut y);
         (rows, y)
     }
 
     /// The files in display order (for keyboard movement).
     fn visible_files(&self, cx: &Context<Self>) -> Vec<(String, Bucket)> {
-        let snap = self.model.read(cx).snap.clone();
-        Bucket::ALL
-            .iter()
-            .filter(|b| !self.collapsed.contains(b))
-            .flat_map(|b| snap.bucket(*b).iter().map(move |f| (f.path.clone(), *b)))
-            .collect()
+        let model = self.model.read(cx);
+        let mut out: Vec<(String, Bucket)> = Vec::new();
+        if !self.collapsed.contains(&Bucket::Conflicted) {
+            out.extend(
+                model
+                    .snap
+                    .bucket(Bucket::Conflicted)
+                    .iter()
+                    .map(|f| (f.path.clone(), Bucket::Conflicted)),
+            );
+        }
+        if !self.collapsed.contains(&CHANGES_GROUP) {
+            out.extend(
+                model
+                    .commit_files()
+                    .into_iter()
+                    .map(|(b, f)| (f.path.clone(), b)),
+            );
+        }
+        out
     }
 
     pub(super) fn step_file(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -120,7 +151,7 @@ impl SidebarView {
     fn toggle_selected(&mut self, cx: &mut Context<Self>) {
         if let Some(Selection::File { path, bucket }) = self.model.read(cx).selection.clone() {
             self.model
-                .update(cx, |m, cx| m.toggle_stage(path, bucket, cx));
+                .update(cx, |m, cx| m.toggle_include(path, bucket, cx));
         }
     }
 
@@ -128,6 +159,7 @@ impl SidebarView {
         let action = if bucket == Bucket::Untracked {
             ConfirmAction::TrashFile { path }
         } else {
+            // Any tracked row — even one only staged — drops everything.
             ConfirmAction::DiscardFile { path }
         };
         self.overlays
@@ -136,7 +168,7 @@ impl SidebarView {
 
     fn discard_selected(&mut self, cx: &mut Context<Self>) {
         if let Some(Selection::File { path, bucket }) = self.model.read(cx).selection.clone()
-            && bucket != Bucket::Staged
+            && bucket != Bucket::Conflicted
         {
             self.ask_discard(path, bucket, cx);
         }
@@ -167,6 +199,7 @@ impl SidebarView {
                 .into_any_element();
         }
 
+        let commit_files = self.model.read(cx).commit_files();
         let (rows, total) = self.changes_layout(cx);
         // FLIP: rows that moved since the last layout start where they were.
         let mut moved_from: std::collections::HashMap<String, f32> =
@@ -232,16 +265,37 @@ impl SidebarView {
                 )
             };
             let el = match &r.key {
-                RowKey::Group(b) => self
-                    .group_row(*b, snap.bucket(*b).len(), cx)
-                    .into_any_element(),
+                RowKey::Group(b) => {
+                    let n = if *b == CHANGES_GROUP {
+                        commit_files.len()
+                    } else {
+                        snap.bucket(*b).len()
+                    };
+                    self.group_row(*b, n, cx).into_any_element()
+                }
                 RowKey::File(path, b) => {
                     let selected = selection
                         == Some(Selection::File {
                             path: path.clone(),
                             bucket: *b,
                         });
-                    self.file_row(path, *b, selected, i, cx).into_any_element()
+                    let change = if *b == Bucket::Conflicted {
+                        snap.bucket(Bucket::Conflicted)
+                            .iter()
+                            .find(|f| &f.path == path)
+                            .cloned()
+                    } else {
+                        commit_files
+                            .iter()
+                            .find(|(_, f)| &f.path == path)
+                            .map(|(_, f)| f.clone())
+                    };
+                    match change {
+                        Some(change) => self
+                            .file_row(path, *b, &change, selected, i, cx)
+                            .into_any_element(),
+                        None => div().into_any_element(),
+                    }
                 }
             };
             children.push(
@@ -272,7 +326,7 @@ impl SidebarView {
             .on_action(cx.listener(|this, _: &SelectNext, window, cx| {
                 this.step(1, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &ToggleStage, _, cx| this.toggle_selected(cx)))
+            .on_action(cx.listener(|this, _: &ToggleInclude, _, cx| this.toggle_selected(cx)))
             .on_action(cx.listener(|this, _: &DiscardSelected, _, cx| this.discard_selected(cx)))
             .flex_1()
             .min_h_0()
@@ -295,21 +349,55 @@ impl SidebarView {
     fn group_row(&self, b: Bucket, n: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let collapsed = self.collapsed.contains(&b);
-        let action = match b {
-            Bucket::Conflicted => "Mark all resolved",
-            Bucket::Staged => "Unstage all",
-            _ => "Stage all",
+        let model = self.model.read(cx);
+        let title = b.title();
+        // The merged group's master checkbox: off when nothing will
+        // commit, on when everything does, dash between.
+        let master = if b == CHANGES_GROUP {
+            let partials = model.partials();
+            let included = model.included_count();
+            let partial = model
+                .commit_files()
+                .iter()
+                .any(|(_, f)| !model.excluded.contains(&f.path) && partials.contains(&f.path));
+            let state = if included == 0 {
+                Check::Off
+            } else if included < n || partial {
+                Check::Mixed
+            } else {
+                Check::On
+            };
+            let m = self.model.clone();
+            Some(
+                checkbox(("group-check", b as usize), state).on_click(move |_, _, cx| {
+                    m.update(cx, |m, cx| {
+                        // Anything less than "all in" means "in".
+                        m.set_all_included(state != Check::On, cx)
+                    })
+                }),
+            )
+        } else {
+            None
         };
         let m = self.model.clone();
+        let hot = self.hot == Some(RowKey::Group(b));
+        let key = RowKey::Group(b);
         div()
             .id(("group", b as usize))
-            .group("group-row")
             .size_full()
             .flex()
             .items_center()
             .gap(px(7.))
             .px(px(8.))
             .cursor_pointer()
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.hot = Some(key.clone());
+                } else if this.hot == Some(key.clone()) {
+                    this.hot = None;
+                }
+                cx.notify();
+            }))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 if !this.collapsed.remove(&b) {
                     this.collapsed.insert(b);
@@ -321,6 +409,7 @@ impl SidebarView {
                     .size(px(11.))
                     .text_color(t.text_faint),
             )
+            .children(master)
             .child(
                 div()
                     .text_size(px(11.5))
@@ -330,74 +419,72 @@ impl SidebarView {
                     } else {
                         t.text_dim
                     })
-                    .child(b.title()),
+                    .child(title),
             )
             .child(rolling_count(("group-count", b as usize), n, cx))
             .child(trail())
-            .child(
-                div()
-                    .id(("group-act", b as usize))
-                    .flex_none()
-                    .px(px(8.))
-                    .h(px(22.))
-                    .flex()
-                    .items_center()
-                    .rounded_full()
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(t.text_dim)
-                    .opacity(0.)
-                    .group_hover("group-row", |s| s.opacity(1.))
-                    .hover(|s| s.bg(t.hover()).text_color(t.text))
-                    .on_click(move |_, _, cx| {
-                        cx.stop_propagation();
-                        m.update(cx, |m, cx| m.stage_group(b, cx));
-                    })
-                    .child(action),
-            )
+            .when(b == Bucket::Conflicted && hot, |el| {
+                // The only bulk act left: marking every conflict resolved.
+                el.child(
+                    div()
+                        .id("group-act")
+                        .flex_none()
+                        .px(px(8.))
+                        .h(px(22.))
+                        .flex()
+                        .items_center()
+                        .rounded_full()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(t.text_dim)
+                        .hover(|s| s.bg(t.hover()).text_color(t.text))
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            m.update(cx, |m, cx| m.stage_group(b, cx));
+                        })
+                        .child("Mark all resolved"),
+                )
+            })
     }
 
     fn file_row(
         &self,
         path: &str,
         b: Bucket,
+        change: &wackdepot_core::status::FileChange,
         selected: bool,
         i: usize,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let t = cx.theme().clone();
-        let snap = self.model.read(cx).snap.clone();
-        let change = snap.bucket(b).iter().find(|f| f.path == path).cloned();
-        let letter = match (b, &change) {
-            (Bucket::Untracked, _) => '?',
-            (Bucket::Conflicted, _) => 'U',
-            (Bucket::Staged, Some(c)) => c.x,
-            (_, Some(c)) => c.y,
-            _ => 'M',
+        let model = self.model.read(cx);
+        let excluded = model.excluded.contains(path);
+        let partial = model.partials().contains(path);
+        let check = if b == Bucket::Conflicted || excluded {
+            Check::Off
+        } else if partial {
+            Check::Mixed
+        } else {
+            Check::On
+        };
+        let letter = match b {
+            Bucket::Untracked => '?',
+            Bucket::Conflicted => 'U',
+            Bucket::Staged => change.x,
+            _ => change.y,
         };
         let letter = if letter == 'T' { 'M' } else { letter };
         let (dir, name) = match path.rfind('/') {
             Some(i) => (&path[..=i], &path[i + 1..]),
             None => ("", path),
         };
-        let stat = snap.line_stat(b, path);
-        let (p1, p2, p3) = (path.to_string(), path.to_string(), path.to_string());
+        let stat = model.snap.line_stat(b, path);
+        let (p1, p_check, p3) = (path.to_string(), path.to_string(), path.to_string());
         let m = self.model.clone();
         let entity = cx.entity();
 
-        let toggle = {
-            let m = m.clone();
-            icon_button(
-                ("stage", i),
-                match b {
-                    Bucket::Staged => "minus",
-                    Bucket::Conflicted => "check",
-                    _ => "plus",
-                },
-            )
-            .small()
-            .on_click(move |_, _, cx| m.update(cx, |m, cx| m.toggle_stage(p1.clone(), b, cx)))
-        };
+        // The hover pill — mounted only while the row is hovered, so it
+        // can't flicker (no group_hover) nor eat clicks while invisible.
         let mut actions = div()
             .flex()
             .items_center()
@@ -405,12 +492,17 @@ impl SidebarView {
             .p(px(2.))
             .rounded_full()
             .bg(t.elevated)
-            .shadow(t.shadow_pop())
-            .child(toggle);
-        if b != Bucket::Staged && b != Bucket::Conflicted {
+            .shadow(t.shadow_pop());
+        if b == Bucket::Conflicted {
+            actions =
+                actions.child(icon_button(("resolve", i), "check").small().on_click(
+                    move |_, _, cx| m.update(cx, |m, cx| m.toggle_stage(p1.clone(), b, cx)),
+                ));
+        } else {
             // A conflicted path can't be "discarded" (`git restore` refuses
             // unmerged paths) — its outs are ours/theirs/resolve instead.
             let e = entity.clone();
+            let p2 = path.to_string();
             actions = actions.child(icon_button(("discard", i), "trash").small().on_click(
                 move |_, _, cx| {
                     e.update(cx, |s, cx| s.ask_discard(p2.clone(), b, cx));
@@ -418,18 +510,31 @@ impl SidebarView {
             ));
         }
 
+        let hot = self.hot.as_ref() == Some(&RowKey::File(path.to_string(), b));
+        let row_key = RowKey::File(path.to_string(), b);
+        let m2 = self.model.clone();
         let mut row = div()
             .id(("file", i))
-            .group("file-row")
             .mx(px(2.))
             .h(px(metrics::ROW_H - 2.))
             .mt(px(1.))
             .flex()
             .items_center()
-            .gap(px(9.))
+            .gap(px(7.))
             .px(px(9.))
             .rounded_full()
             .cursor_pointer()
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    if this.hot.as_ref() != Some(&row_key) {
+                        this.hot = Some(row_key.clone());
+                        cx.notify();
+                    }
+                } else if this.hot.as_ref() == Some(&row_key) {
+                    this.hot = None;
+                    cx.notify();
+                }
+            }))
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.focus_list(window, cx);
                 let sel = Selection::File {
@@ -453,6 +558,13 @@ impl SidebarView {
                         cx.notify();
                     }
                 }),
+            )
+            .child(
+                checkbox(("check", i), check)
+                    .disabled(b == Bucket::Conflicted)
+                    .on_click(move |_, _, cx| {
+                        m2.update(cx, |m, cx| m.toggle_include(p_check.clone(), b, cx))
+                    }),
             )
             .child(status_mark(letter))
             .child(
@@ -502,7 +614,7 @@ impl SidebarView {
                             .gap(px(5.))
                             .text_size(px(11.))
                             .font_weight(FontWeight::MEDIUM)
-                            .group_hover("file-row", |s| s.opacity(0.))
+                            .opacity(if hot { 0. } else { 1. })
                             .children(stat.and_then(|(a, _)| {
                                 (a > 0).then(|| {
                                     div().text_color(t.sem.diff_add).child(format!("+{a}"))
@@ -514,14 +626,9 @@ impl SidebarView {
                                 })
                             })),
                     )
-                    .child(
-                        div()
-                            .absolute()
-                            .right(px(-4.))
-                            .opacity(0.)
-                            .group_hover("file-row", |s| s.opacity(1.))
-                            .child(actions),
-                    ),
+                    .when(hot, move |el| {
+                        el.child(div().absolute().right(px(-4.)).child(actions))
+                    }),
             );
         if selected {
             row = row.bg(t.selected_fill()).shadow(vec![t.rim(t.accent_line)]);
@@ -554,10 +661,13 @@ impl SidebarView {
         let pop = popover("context").width(240.).at(at).on_dismiss(dismiss);
         let pop = match target {
             ContextTarget::File { path, bucket } => {
-                let label = match bucket {
-                    Bucket::Staged => "Unstage",
-                    Bucket::Conflicted => "Mark resolved",
-                    _ => "Stage",
+                // The checkbox's word in a menu: conflicted files resolve,
+                // everything else flips its include flag.
+                let out = self.model.read(cx).excluded.contains(&path);
+                let (label, icon_name) = match bucket {
+                    Bucket::Conflicted => ("Mark resolved", "check"),
+                    _ if out => ("Include in commit", "check"),
+                    _ => ("Exclude from commit", "minus"),
                 };
                 let (m1, m2, m3) = (m.clone(), m.clone(), m.clone());
                 let (pa, pb, pc, pd, pe) = (
@@ -575,18 +685,12 @@ impl SidebarView {
                     close.clone(),
                 );
                 let e = cx.entity();
-                let mut pop = pop.child(
-                    menu_row("ctx-stage", label)
-                        .icon(if bucket == Bucket::Staged {
-                            "minus"
-                        } else {
-                            "plus"
-                        })
-                        .on_click(move |_, _, cx| {
-                            m1.update(cx, |m, cx| m.toggle_stage(pa.clone(), bucket, cx));
-                            c1(cx);
-                        }),
-                );
+                let mut pop = pop.child(menu_row("ctx-include", label).icon(icon_name).on_click(
+                    move |_, _, cx| {
+                        m1.update(cx, |m, cx| m.toggle_include(pa.clone(), bucket, cx));
+                        c1(cx);
+                    },
+                ));
                 if bucket == Bucket::Conflicted {
                     // The wholesale outs for an unmerged path. Porcelain's
                     // XY tells which side deleted it — resolving that way
@@ -643,7 +747,7 @@ impl SidebarView {
                                 }),
                         );
                     }
-                } else if bucket != Bucket::Staged {
+                } else {
                     pop = pop.child(
                         menu_row("ctx-discard", "Discard changes…")
                             .icon("trash")

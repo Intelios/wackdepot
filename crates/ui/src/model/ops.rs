@@ -275,7 +275,67 @@ impl RepoModel {
         );
     }
 
-    // ── Staging ────────────────────────────────────────────────────────
+    // ── The commit checkboxes ────────────────────────────────────────
+
+    /// The checkbox: off → in, in → out — and the partially-staged dash
+    /// → checked, which means staging the rest of the file right away
+    /// (Desktop's indeterminate → checked). "Out" is a flag, not an
+    /// unstage — the commit syncs the index at the last moment.
+    pub fn toggle_include(&mut self, path: String, bucket: Bucket, cx: &mut Context<Self>) {
+        if bucket == Bucket::Conflicted {
+            self.toggle_stage(path, bucket, cx);
+            return;
+        }
+        let was_out = self.excluded.remove(&path);
+        if self.partials().contains(&path) {
+            self.optimistic_toggle(&path, bucket, cx);
+            self.run(
+                BusyOp::Other("Staging"),
+                move |r, _| {
+                    stage::stage_file(r, &path)?;
+                    Ok(Done::quiet().beat(Beat::Staged {
+                        paths: vec![path.clone()],
+                    }))
+                },
+                cx,
+            );
+            return;
+        }
+        if !was_out {
+            self.excluded.insert(path);
+        }
+        cx.emit(RepoEvent::Snapshot);
+        cx.notify();
+    }
+
+    /// The group header's master checkbox: anything out (or partial)
+    /// brings everything back in; all-in drops every file.
+    pub fn set_all_included(&mut self, include: bool, cx: &mut Context<Self>) {
+        if include {
+            self.excluded.clear();
+            let partials: Vec<String> = self.partials().into_iter().collect();
+            // Files staged only in part need their rest staged before
+            // they read as checked.
+            if !partials.is_empty() {
+                self.run(
+                    BusyOp::Other("Staging"),
+                    move |r, _| {
+                        stage::stage_paths(r, &partials)?;
+                        Ok(Done::quiet().beat(Beat::Staged {
+                            paths: partials.clone(),
+                        }))
+                    },
+                    cx,
+                );
+            }
+        } else {
+            for (_, f) in self.commit_files() {
+                self.excluded.insert(f.path);
+            }
+            cx.emit(RepoEvent::Snapshot);
+        }
+        cx.notify();
+    }
 
     /// Stage or unstage one file (a conflicted file is marked resolved).
     pub fn toggle_stage(&mut self, path: String, bucket: Bucket, cx: &mut Context<Self>) {
@@ -429,6 +489,10 @@ impl RepoModel {
 
     // ── Commit ─────────────────────────────────────────────────────────
 
+    /// Commit the checked files: the index is synced to the selection
+    /// (unchecked files unstaged, checked-but-unstaged files staged,
+    /// partial files left as picked) and committed in one op — the user
+    /// never stages anything by hand.
     pub fn commit(
         &mut self,
         summary: String,
@@ -436,9 +500,11 @@ impl RepoModel {
         opts: CommitOptions,
         cx: &mut Context<Self>,
     ) {
+        let excluded = self.excluded.clone();
         self.run(
             BusyOp::Commit,
             move |r, _| {
+                stage::stage_for_commit(r, &excluded)?;
                 let sha = commit::commit_with(r, &summary, &description, &opts)?;
                 Ok(Done::quiet().beat(Beat::Committed { sha }))
             },
@@ -482,7 +548,7 @@ impl RepoModel {
             ConfirmAction::DiscardFile { path } => self.run(
                 BusyOp::Other("Discarding"),
                 move |r, _| {
-                    stage::discard_file(r, &path)?;
+                    stage::discard_fully(r, &path)?;
                     Ok(Done::quiet())
                 },
                 cx,
@@ -501,8 +567,16 @@ impl RepoModel {
                 BusyOp::Other("Discarding"),
                 |r, _| {
                     let s = status::status(r)?;
-                    for f in s.unstaged.iter().chain(s.untracked.iter()) {
-                        stage::discard_file(r, &f.path)?;
+                    // Everything except conflicts — a conflicted path
+                    // can't be restored, and trashing it would lose the
+                    // merge's work.
+                    for f in s
+                        .staged
+                        .iter()
+                        .chain(s.unstaged.iter())
+                        .chain(s.untracked.iter())
+                    {
+                        stage::discard_fully(r, &f.path)?;
                     }
                     Ok(Done::toast("All changes discarded."))
                 },

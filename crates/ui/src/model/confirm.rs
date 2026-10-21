@@ -80,11 +80,14 @@ impl ConfirmAction {
 
     pub fn body(&self) -> String {
         match self {
-            Self::DiscardFile { .. } | Self::DiscardHunk { .. } | Self::DiscardLines { .. } => {
+            Self::DiscardFile { .. } => {
+                "The file goes back to its last committed version. This can't be undone.".into()
+            }
+            Self::DiscardHunk { .. } | Self::DiscardLines { .. } => {
                 "The working copy goes back to the last staged or committed version. This can't be undone.".into()
             }
             Self::TrashFile { .. } => "It's untracked, so it moves to WackDepot's trash folder instead of being deleted.".into(),
-            Self::DiscardAll => "Every unstaged change is thrown away and untracked files move to the trash folder.".into(),
+            Self::DiscardAll => "Every changed file goes back to its committed version and untracked files move to the trash folder.".into(),
             Self::DeleteBranch { .. } => "The branch is removed locally. Its commits stay reachable from wherever they were merged.".into(),
             Self::ForceDeleteBranch { .. } => "Its commits aren't on any other branch, so they'll only be recoverable from the reflog.".into(),
             Self::AbortOperation { .. } => "The repository goes back to how it was before it started. Resolved conflicts are lost.".into(),

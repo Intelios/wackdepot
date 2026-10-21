@@ -993,7 +993,8 @@ impl TitlebarView {
                         }),
                 );
             }
-            let has_changes = !snap.bucket(crate::model::Bucket::Unstaged).is_empty()
+            let has_changes = !snap.bucket(crate::model::Bucket::Staged).is_empty()
+                || !snap.bucket(crate::model::Bucket::Unstaged).is_empty()
                 || !snap.bucket(crate::model::Bucket::Untracked).is_empty();
             let (o, c) = (overlays.clone(), this.clone());
             pop = pop.child(

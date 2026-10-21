@@ -784,6 +784,10 @@ impl DiffCard {
             .gap(px(10.))
             .h(px(46.))
             .px(px(12.))
+            // The card clips to a rectangle — paint the top corners rounded
+            // or the band leaves a square notch inside the card's rim.
+            .rounded_tl(px(metrics::RADIUS_CARD_INNER))
+            .rounded_tr(px(metrics::RADIUS_CARD_INNER))
             .bg(t.surface)
             .child(accent_mark(if file.status == DiffFileStatus::Conflicted {
                 "conflict"
@@ -877,6 +881,8 @@ impl DiffCard {
             .gap(px(12.))
             .px(px(14.))
             .py(px(12.))
+            .rounded_tl(px(metrics::RADIUS_CARD_INNER))
+            .rounded_tr(px(metrics::RADIUS_CARD_INNER))
             .bg(t.surface)
             .child(div().pt(px(2.)).child(accent_mark("commit").size(28.)))
             .child(
@@ -984,10 +990,20 @@ impl DiffCard {
         &self,
         images: &ImageVersions,
         labels: (&'static str, &'static str),
+        card_edge: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let t = cx.theme().clone();
-        let mut row = div().size_full().bg(t.well).flex().p(px(14.)).gap(px(14.));
+        let mut row = div()
+            .size_full()
+            .rounded_br(px(metrics::RADIUS_CARD_INNER))
+            .when(card_edge, |el| {
+                el.rounded_bl(px(metrics::RADIUS_CARD_INNER))
+            })
+            .bg(t.well)
+            .flex()
+            .p(px(14.))
+            .gap(px(14.));
         let mut shown = Vec::new();
         for (side, label) in [
             (images.old.as_ref(), labels.0),
@@ -1240,9 +1256,9 @@ impl DiffCard {
     /// The diff well. While a different selection's diff loads, the last
     /// diff stays on screen dimmed under a veil (blocking stray clicks)
     /// with the orbit — the card's chrome doesn't collapse to a spinner.
-    fn body_pane(&self, stale: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn body_pane(&self, stale: bool, card_edge: bool, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
-        let body = self.body(cx);
+        let body = self.body(card_edge, cx);
         if !stale {
             return body;
         }
@@ -1255,6 +1271,10 @@ impl DiffCard {
                     .absolute()
                     .inset_0()
                     .occlude()
+                    .when(card_edge, |el| {
+                        el.rounded_bl(px(metrics::RADIUS_CARD_INNER))
+                    })
+                    .rounded_br(px(metrics::RADIUS_CARD_INNER))
                     .bg(t.well.opacity(0.55))
                     .flex()
                     .items_center()
@@ -1264,7 +1284,9 @@ impl DiffCard {
             .into_any_element()
     }
 
-    fn body(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// `card_edge`: the pane's left side is the card's — round its bottom
+    /// too. False when the commit file strip occupies the card's left edge.
+    fn body(&self, card_edge: bool, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let Some(file) = self.file() else {
             return div()
@@ -1281,7 +1303,7 @@ impl DiffCard {
         if file.is_binary {
             let images = &self.doc.as_ref().unwrap().images;
             if images.any() {
-                return self.image_panes(images, ("Before", "After"), cx);
+                return self.image_panes(images, ("Before", "After"), card_edge, cx);
             }
             return div()
                 .size_full()
@@ -1311,6 +1333,10 @@ impl DiffCard {
         let entity = cx.entity();
         div()
             .size_full()
+            .rounded_br(px(metrics::RADIUS_CARD_INNER))
+            .when(card_edge, |el| {
+                el.rounded_bl(px(metrics::RADIUS_CARD_INNER))
+            })
             .bg(t.well)
             .child(
                 list(self.list.clone(), move |ix, _window, cx| {
@@ -1468,6 +1494,7 @@ impl DiffCard {
             ConflictView::Markers => &doc.images,
         };
         let shown = self.shown_file().unwrap_or(file);
+        // Conflicted diffs only render in the full-width working layout.
         let content: AnyElement = if images.any() {
             self.image_panes(
                 images,
@@ -1475,6 +1502,7 @@ impl DiffCard {
                     ConflictView::Sides => ("Ours", "Theirs"),
                     ConflictView::Markers => ("Before", "On disk"),
                 },
+                true,
                 cx,
             )
         } else if shown.is_binary {
@@ -1516,6 +1544,8 @@ impl DiffCard {
 
         div()
             .size_full()
+            .rounded_bl(px(metrics::RADIUS_CARD_INNER))
+            .rounded_br(px(metrics::RADIUS_CARD_INNER))
             .bg(t.well)
             .flex()
             .flex_col()
@@ -1590,6 +1620,9 @@ impl DiffCard {
                 .right_0()
                 .flex()
                 .justify_center()
+                // Buttons no longer occlude — the pill blocks the gutter
+                // hits underneath it instead.
+                .occlude()
                 .child(frosted(999.0, metrics::FROST_BLUR, pill)),
         )
     }
@@ -1652,9 +1685,12 @@ impl Render for DiffCard {
                 if let Some(file) = doc.file.as_ref() {
                     card = card.child(self.file_head(file, cx));
                 }
-                card = card
-                    .child(seam())
-                    .child(div().flex_1().min_h_0().child(self.body_pane(stale, cx)));
+                card = card.child(seam()).child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .child(self.body_pane(stale, true, cx)),
+                );
             }
             DocKind::Commit { .. } => {
                 card = card.child(self.commit_head(&doc, cx)).child(seam()).child(
@@ -1668,7 +1704,7 @@ impl Render for DiffCard {
                                 .flex_1()
                                 .min_w_0()
                                 .h_full()
-                                .child(self.body_pane(stale, cx)),
+                                .child(self.body_pane(stale, false, cx)),
                         ),
                 );
             }

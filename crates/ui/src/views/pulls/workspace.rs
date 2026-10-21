@@ -5,7 +5,7 @@ use crate::components::misc::empty_state;
 use crate::components::pill_track::pill_track;
 use crate::components::text_input::{TextInput, TextInputEvent};
 use crate::model::pulls::{PullEvent, PullRequestModel};
-use crate::theme::ActiveTheme;
+use crate::theme::{ActiveTheme, metrics};
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, FontWeight, IntoElement, ParentElement, Render,
     ScrollHandle, Styled, Window, div, prelude::*, px,
@@ -302,6 +302,8 @@ impl PullWorkspace {
         let edit = cx.entity();
         div()
             .p(px(18.))
+            .rounded_tl(px(metrics::RADIUS_CARD_INNER))
+            .rounded_tr(px(metrics::RADIUS_CARD_INNER))
             .bg(t.surface)
             .flex()
             .flex_col()

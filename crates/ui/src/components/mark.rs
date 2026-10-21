@@ -1,8 +1,9 @@
 //! Round marks: git status letters, accent marks that lead cards and
-//! groups, and repo monograms.
+//! groups, repo monograms — and the include checkbox.
 
 use gpui::{
-    App, FontWeight, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, px,
+    App, ClickEvent, ElementId, FontWeight, IntoElement, ParentElement, RenderOnce, SharedString,
+    Styled, Window, div, prelude::*, px,
 };
 
 use crate::icons::icon;
@@ -37,6 +38,103 @@ impl StatusMark {
     pub fn size(mut self, s: f32) -> Self {
         self.size = s;
         self
+    }
+}
+
+/// What a checkbox shows: off, on, or the partially-staged dash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Check {
+    Off,
+    On,
+    Mixed,
+}
+
+type CheckClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+
+/// The little square that decides whether a file joins the commit —
+/// GitHub Desktop's checked / unchecked / partially-staged.
+#[derive(IntoElement)]
+pub struct Checkbox {
+    id: ElementId,
+    state: Check,
+    size: f32,
+    disabled: bool,
+    on_click: Option<CheckClick>,
+}
+
+pub fn checkbox(id: impl Into<ElementId>, state: Check) -> Checkbox {
+    Checkbox {
+        id: id.into(),
+        state,
+        size: 16.0,
+        disabled: false,
+        on_click: None,
+    }
+}
+
+impl Checkbox {
+    pub fn size(mut self, s: f32) -> Self {
+        self.size = s;
+        self
+    }
+
+    pub fn disabled(mut self, d: bool) -> Self {
+        self.disabled = d;
+        self
+    }
+
+    pub fn on_click(mut self, f: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
+        self.on_click = Some(Box::new(f));
+        self
+    }
+}
+
+impl RenderOnce for Checkbox {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let t = cx.theme();
+        let on = self.state != Check::Off;
+        let mut el = div()
+            .id(self.id)
+            .size(px(self.size))
+            .flex_none()
+            .rounded(px(self.size * 0.28))
+            .bg(if on { t.accent } else { t.input })
+            .shadow(vec![t.rim(if on { t.accent } else { t.border_bright })])
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_color(t.on_accent);
+        match self.state {
+            Check::On => {
+                el = el.child(icon("check").size(px(self.size * 0.72)));
+            }
+            Check::Mixed => {
+                el = el.child(
+                    div()
+                        .w(px(self.size * 0.55))
+                        .h(px(2.))
+                        .rounded_full()
+                        .bg(t.on_accent),
+                );
+            }
+            Check::Off => {}
+        }
+        if self.disabled {
+            return el.opacity(0.4);
+        }
+        el = el.cursor_pointer();
+        if on {
+            el = el.hover(move |s| s.bg(t.accent_hover).shadow(vec![t.rim(t.accent_hover)]));
+        } else {
+            el = el.hover(move |s| s.shadow(vec![t.rim(t.accent_line_mid)]));
+        }
+        if let Some(f) = self.on_click {
+            el = el.on_click(move |e, w, cx| {
+                cx.stop_propagation();
+                f(e, w, cx)
+            });
+        }
+        el
     }
 }
 
