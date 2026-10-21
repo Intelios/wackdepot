@@ -18,7 +18,9 @@ target/release/wackdepot --github-export-client production "$APP/Contents/Resour
 iconutil -c icns "$ROOT/assets/icon.iconset" -o "$ROOT/assets/icon.icns"
 cp "$ROOT/assets/icon.icns" "$APP/Contents/Resources/icon.icns"
 
-cat > "$APP/Contents/Info.plist" <<'EOF'
+VER="$(awk -F'"' '/^version = "/ { print $2; exit }' Cargo.toml)"
+
+cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -26,8 +28,8 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundleName</key><string>WackDepot</string>
     <key>CFBundleDisplayName</key><string>WackDepot</string>
     <key>CFBundleIdentifier</key><string>com.wackdepot.app</string>
-    <key>CFBundleVersion</key><string>0.1.0</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>${VER}</string>
+    <key>CFBundleShortVersionString</key><string>${VER}</string>
     <key>CFBundleExecutable</key><string>wackdepot</string>
     <key>CFBundleIconFile</key><string>icon.icns</string>
     <key>CFBundlePackageType</key><string>APPL</string>
