@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1600" height="984" viewBox="0 0 1600 984"><defs><filter id="grey"><feColorMatrix type="saturate" values="0"/></filter></defs><rect width="1600" height="984" fill="#f7f7f4"/><text x="60" y="78" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="40" font-weight="700" fill="#161616">WackDepot — logo concepts, round 1</text><text x="60" y="116" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="20" fill="#6b6b6b">Concepts for review — pick a direction (or tell me what you like in each).</text><rect x="60" y="150" width="474.667" height="774" rx="18" fill="#fff" stroke="#161616" stroke-width="2"/><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="90" y="190" width="414.667" height="300" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Commit Buddy</title>
+<path fill="#000" fill-rule="evenodd" d="M20 118 H52 V138 H20 A10 10 0 0 1 20 118 Z M204 118 H236 A10 10 0 0 1 236 138 H204 Z
+M108 56 H148 C186 56 204 74 204 112 V144 C204 182 186 200 148 200 H108 C70 200 52 182 52 144 V112 C52 74 70 56 108 56 Z
+M100 100 A10 10 0 0 1 120 100 V124 A10 10 0 0 1 100 124 Z M136 100 A10 10 0 0 1 156 100 V124 A10 10 0 0 1 136 124 Z
+M108 152 H148 A20 20 0 0 1 108 152 Z"/>
+</svg>
+</g><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 256" x="90" y="514" width="414.667" height="120" preserveAspectRatio="xMidYMid meet"><title>WackDepot lockup (exploration, live text)</title>
+<svg x="0" y="0" width="256" height="256" viewBox="0 0 256 256">
+<path fill="#000" fill-rule="evenodd" d="M20 118 H52 V138 H20 A10 10 0 0 1 20 118 Z M204 118 H236 A10 10 0 0 1 236 138 H204 Z
+M108 56 H148 C186 56 204 74 204 112 V144 C204 182 186 200 148 200 H108 C70 200 52 182 52 144 V112 C52 74 70 56 108 56 Z
+M100 100 A10 10 0 0 1 120 100 V124 A10 10 0 0 1 100 124 Z M136 100 A10 10 0 0 1 156 100 V124 A10 10 0 0 1 136 124 Z
+M108 152 H148 A20 20 0 0 1 108 152 Z"/>
+</svg>
+<text x="262" y="160" font-family="Inter, -apple-system, Helvetica Neue, sans-serif" font-weight="800" font-size="104" letter-spacing="-4" fill="#000">WackDepot</text>
+</svg></g><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="90" y="660" width="64" height="64" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Commit Buddy</title>
+<path fill="#000" fill-rule="evenodd" d="M20 118 H52 V138 H20 A10 10 0 0 1 20 118 Z M204 118 H236 A10 10 0 0 1 236 138 H204 Z
+M108 56 H148 C186 56 204 74 204 112 V144 C204 182 186 200 148 200 H108 C70 200 52 182 52 144 V112 C52 74 70 56 108 56 Z
+M100 100 A10 10 0 0 1 120 100 V124 A10 10 0 0 1 100 124 Z M136 100 A10 10 0 0 1 156 100 V124 A10 10 0 0 1 136 124 Z
+M108 152 H148 A20 20 0 0 1 108 152 Z"/>
+</svg>
+</g><text x="122" y="744" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" fill="#8a8a8a" text-anchor="middle">64px</text><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="180" y="692" width="32" height="32" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Commit Buddy</title>
+<path fill="#000" fill-rule="evenodd" d="M20 118 H52 V138 H20 A10 10 0 0 1 20 118 Z M204 118 H236 A10 10 0 0 1 236 138 H204 Z
+M108 56 H148 C186 56 204 74 204 112 V144 C204 182 186 200 148 200 H108 C70 200 52 182 52 144 V112 C52 74 70 56 108 56 Z
+M100 100 A10 10 0 0 1 120 100 V124 A10 10 0 0 1 100 124 Z M136 100 A10 10 0 0 1 156 100 V124 A10 10 0 0 1 136 124 Z
+M108 152 H148 A20 20 0 0 1 108 152 Z"/>
+</svg>
+</g><text x="196" y="744" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" fill="#8a8a8a" text-anchor="middle">32px</text><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="238" y="708" width="16" height="16" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Commit Buddy</title>
+<path fill="#000" fill-rule="evenodd" d="M20 118 H52 V138 H20 A10 10 0 0 1 20 118 Z M204 118 H236 A10 10 0 0 1 236 138 H204 Z
+M108 56 H148 C186 56 204 74 204 112 V144 C204 182 186 200 148 200 H108 C70 200 52 182 52 144 V112 C52 74 70 56 108 56 Z
+M100 100 A10 10 0 0 1 120 100 V124 A10 10 0 0 1 100 124 Z M136 100 A10 10 0 0 1 156 100 V124 A10 10 0 0 1 136 124 Z
+M108 152 H148 A20 20 0 0 1 108 152 Z"/>
+</svg>
+</g><text x="246" y="744" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" fill="#8a8a8a" text-anchor="middle">16px</text><text x="90.0" y="780" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="26" font-weight="700" fill="#161616">A · Commit Buddy</text><text x="90.0" y="808" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="15" font-weight="700" fill="#161616" letter-spacing="1.5">RECOMMENDED</text><text x="90.0" y="842" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="19" fill="#555">The mascot is the commit: a cheerful blob</text><text x="90.0" y="868" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="19" fill="#555">sitting on the history line.</text><rect x="562.667" y="150" width="474.667" height="774" rx="18" fill="#fff" stroke="#e4e4e0" stroke-width="1"/><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="592.667" y="190" width="414.667" height="300" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Homecoming D</title><g transform="translate(7 0)">
+<g fill="none" stroke="#000" stroke-width="26" stroke-linecap="round">
+<path d="M84 32 V42 M84 102 V154 M84 214 V224"/>
+<path d="M114 72 H132 A56 56 0 0 1 132 184 H114"/>
+<circle cx="84" cy="72" r="30"/><circle cx="84" cy="184" r="30"/>
+</g>
+</g></svg>
+</g><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 256" x="592.667" y="514" width="414.667" height="120" preserveAspectRatio="xMidYMid meet"><title>WackDepot lockup (exploration, live text)</title>
+<svg x="0" y="0" width="256" height="256" viewBox="0 0 256 256"><g transform="translate(7 0)">
+<g fill="none" stroke="#000" stroke-width="26" stroke-linecap="round">
+<path d="M84 32 V42 M84 102 V154 M84 214 V224"/>
+<path d="M114 72 H132 A56 56 0 0 1 132 184 H114"/>
+<circle cx="84" cy="72" r="30"/><circle cx="84" cy="184" r="30"/>
+</g>
+</g></svg>
+<text x="262" y="160" font-family="Inter, -apple-system, Helvetica Neue, sans-serif" font-weight="800" font-size="104" letter-spacing="-4" fill="#000">WackDepot</text>
+</svg></g><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="592.667" y="660" width="64" height="64" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Homecoming D</title><g transform="translate(7 0)">
+<g fill="none" stroke="#000" stroke-width="26" stroke-linecap="round">
+<path d="M84 32 V42 M84 102 V154 M84 214 V224"/>
+<path d="M114 72 H132 A56 56 0 0 1 132 184 H114"/>
+<circle cx="84" cy="72" r="30"/><circle cx="84" cy="184" r="30"/>
+</g>
+</g></svg>
+</g><text x="624.667" y="744" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" fill="#8a8a8a" text-anchor="middle">64px</text><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="682.667" y="692" width="32" height="32" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Homecoming D</title><g transform="translate(7 0)">
+<g fill="none" stroke="#000" stroke-width="26" stroke-linecap="round">
+<path d="M84 32 V42 M84 102 V154 M84 214 V224"/>
+<path d="M114 72 H132 A56 56 0 0 1 132 184 H114"/>
+<circle cx="84" cy="72" r="30"/><circle cx="84" cy="184" r="30"/>
+</g>
+</g></svg>
+</g><text x="698.667" y="744" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" fill="#8a8a8a" text-anchor="middle">32px</text><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="740.667" y="708" width="16" height="16" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Homecoming D</title><g transform="translate(7 0)">
+<g fill="none" stroke="#000" stroke-width="26" stroke-linecap="round">
+<path d="M84 32 V42 M84 102 V154 M84 214 V224"/>
+<path d="M114 72 H132 A56 56 0 0 1 132 184 H114"/>
+<circle cx="84" cy="72" r="30"/><circle cx="84" cy="184" r="30"/>
+</g>
+</g></svg>
+</g><text x="748.667" y="744" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" fill="#8a8a8a" text-anchor="middle">16px</text><text x="592.6666666666667" y="780" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="26" font-weight="700" fill="#161616">B · Homecoming D</text><text x="592.6666666666667" y="814" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="19" fill="#555">Two commits on main and a branch that loops</text><text x="592.6666666666667" y="840" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="19" fill="#555">home, drawing the D.</text><rect x="1065.33" y="150" width="474.667" height="774" rx="18" fill="#fff" stroke="#e4e4e0" stroke-width="1"/><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="1095.33" y="190" width="414.667" height="300" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Bounce W</title>
+<path fill="none" stroke="#000" stroke-width="30" stroke-linecap="round" stroke-linejoin="round" d="M36 92 L80 204 L128 121 L176 204 L220 92"/>
+<circle cx="128" cy="66" r="24"/>
+</svg>
+</g><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 256" x="1095.33" y="514" width="414.667" height="120" preserveAspectRatio="xMidYMid meet"><title>WackDepot lockup (exploration, live text)</title>
+<svg x="0" y="0" width="256" height="256" viewBox="0 0 256 256">
+<path fill="none" stroke="#000" stroke-width="30" stroke-linecap="round" stroke-linejoin="round" d="M36 92 L80 204 L128 121 L176 204 L220 92"/>
+<circle cx="128" cy="66" r="24"/>
+</svg>
+<text x="262" y="160" font-family="Inter, -apple-system, Helvetica Neue, sans-serif" font-weight="800" font-size="104" letter-spacing="-4" fill="#000">WackDepot</text>
+</svg></g><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="1095.33" y="660" width="64" height="64" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Bounce W</title>
+<path fill="none" stroke="#000" stroke-width="30" stroke-linecap="round" stroke-linejoin="round" d="M36 92 L80 204 L128 121 L176 204 L220 92"/>
+<circle cx="128" cy="66" r="24"/>
+</svg>
+</g><text x="1127.33" y="744" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" fill="#8a8a8a" text-anchor="middle">64px</text><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="1185.33" y="692" width="32" height="32" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Bounce W</title>
+<path fill="none" stroke="#000" stroke-width="30" stroke-linecap="round" stroke-linejoin="round" d="M36 92 L80 204 L128 121 L176 204 L220 92"/>
+<circle cx="128" cy="66" r="24"/>
+</svg>
+</g><text x="1201.33" y="744" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" fill="#8a8a8a" text-anchor="middle">32px</text><g filter="url(#grey)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" x="1243.33" y="708" width="16" height="16" preserveAspectRatio="xMidYMid meet"><title>WackDepot — Bounce W</title>
+<path fill="none" stroke="#000" stroke-width="30" stroke-linecap="round" stroke-linejoin="round" d="M36 92 L80 204 L128 121 L176 204 L220 92"/>
+<circle cx="128" cy="66" r="24"/>
+</svg>
+</g><text x="1251.33" y="744" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" fill="#8a8a8a" text-anchor="middle">16px</text><text x="1095.3333333333335" y="780" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="26" font-weight="700" fill="#161616">C · Bounce W</text><text x="1095.3333333333335" y="814" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="19" fill="#555">The W&#x27;s middle peak flicks a commit dot</text><text x="1095.3333333333335" y="840" font-family="system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="19" fill="#555">into the air — playful, typographic.</text></svg>

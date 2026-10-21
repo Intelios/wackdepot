@@ -14,16 +14,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/wackdepot "$APP/Contents/MacOS/wackdepot"
 target/release/wackdepot --github-export-client production "$APP/Contents/Resources/github-oauth.json"
 
-if [ ! -f "$ROOT/assets/icon.icns" ]; then
-    mkdir -p "$ROOT/assets/icon.iconset"
-    python3 "$ROOT/scripts/make_icon.py"
-    for s in 16 32 128 256 512; do
-        sips -z "$s" "$s" /tmp/wackdepot-icon.png --out "$ROOT/assets/icon.iconset/icon_${s}x${s}.png" >/dev/null
-        sips -z "$((s * 2))" "$((s * 2))" /tmp/wackdepot-icon.png --out "$ROOT/assets/icon.iconset/icon_${s}x${s}@2x.png" >/dev/null
-    done
-    iconutil -c icns "$ROOT/assets/icon.iconset" -o "$ROOT/assets/icon.icns"
-    rm -rf "$ROOT/assets/icon.iconset"
-fi
+# The iconset is committed (design/logo/source/build.py generates it); just compile it.
+iconutil -c icns "$ROOT/assets/icon.iconset" -o "$ROOT/assets/icon.icns"
 cp "$ROOT/assets/icon.icns" "$APP/Contents/Resources/icon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'EOF'

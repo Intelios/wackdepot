@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 256" width="900" height="256"><title>WackDepot lockup — round-1 exploration, live text, do not ship</title>
+<svg x="0" y="0" width="256" height="256" viewBox="0 0 256 256"><g transform="translate(7 0)">
+<g fill="none" stroke="#000" stroke-width="26" stroke-linecap="round">
+<path d="M84 32 V42 M84 102 V154 M84 214 V224"/>
+<path d="M114 72 H132 A56 56 0 0 1 132 184 H114"/>
+<circle cx="84" cy="72" r="30"/><circle cx="84" cy="184" r="30"/>
+</g>
+</g></svg>
+<text x="262" y="160" font-family="Inter, -apple-system, Helvetica Neue, sans-serif" font-weight="800" font-size="104" letter-spacing="-4" fill="#000">WackDepot</text>
+</svg>

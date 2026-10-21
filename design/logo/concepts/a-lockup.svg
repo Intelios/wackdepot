@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 256" width="900" height="256"><title>WackDepot lockup — round-1 exploration, live text, do not ship</title>
+<svg x="0" y="0" width="256" height="256" viewBox="0 0 256 256">
+<path fill="#000" fill-rule="evenodd" d="M20 118 H52 V138 H20 A10 10 0 0 1 20 118 Z M204 118 H236 A10 10 0 0 1 236 138 H204 Z
+M108 56 H148 C186 56 204 74 204 112 V144 C204 182 186 200 148 200 H108 C70 200 52 182 52 144 V112 C52 74 70 56 108 56 Z
+M100 100 A10 10 0 0 1 120 100 V124 A10 10 0 0 1 100 124 Z M136 100 A10 10 0 0 1 156 100 V124 A10 10 0 0 1 136 124 Z
+M108 152 H148 A20 20 0 0 1 108 152 Z"/>
+</svg>
+<text x="262" y="160" font-family="Inter, -apple-system, Helvetica Neue, sans-serif" font-weight="800" font-size="104" letter-spacing="-4" fill="#000">WackDepot</text>
+</svg>

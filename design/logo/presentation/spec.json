@@ -1,0 +1,55 @@
+{
+  "brand": "WackDepot",
+  "tagline": "The native macOS Git client.",
+  "brief": "A GitHub-Desktop-class Git client rebuilt in Rust on gpui: frosted glass, lime accent, quick and a little playful. The logo has to live next to Safari, Xcode and Terminal in the Dock, at 16 px in a README badge, and in the app's own titlebar.",
+  "adjectives": [
+    "native",
+    "playful",
+    "quick",
+    "crafted"
+  ],
+  "criteria": "Success: reads at 16 px, holds in one colour, unmistakably not a branch-with-nodes Git icon, and gives the empty states and mascot a character to grow from.",
+  "industry": "software",
+  "mockups": [
+    "app-icon",
+    "readme",
+    "terminal",
+    "website",
+    "favicon-tab",
+    "social"
+  ],
+  "nav": [
+    "Download",
+    "Docs",
+    "GitHub"
+  ],
+  "brand_color": "#c2ee4a",
+  "tile_color": "#111310",
+  "greyscale": false,
+  "final": true,
+  "concepts": [
+    {
+      "name": "Commit Buddy",
+      "symbol": "../kit/svg/wackdepot-symbol-ink.svg",
+      "lockup": "../kit/svg/wackdepot-horizontal-ink.svg",
+      "stacked": "../kit/svg/wackdepot-stacked-ink.svg",
+      "avatar": "../kit/svg/wackdepot-symbol-ink.svg",
+      "lockup_on_dark": "../kit/svg/wackdepot-horizontal-reversed.svg",
+      "stacked_on_dark": "../kit/svg/wackdepot-stacked-reversed.svg",
+      "idea": "The mascot is the commit: a cheerful blob sitting on the history line.",
+      "rationale": [
+        "The face is the product's tone of voice \u2014 warm where every other Git client is technical",
+        "The line through it is history, so the mark still says what the app does",
+        "One shape at every size: Dock icon, 16 px favicon, in-app mascot, empty states"
+      ],
+      "symbol_on_tile": "../kit/svg/wackdepot-symbol-lime.svg",
+      "symbol_on_dark": "../kit/svg/wackdepot-symbol-lime.svg"
+    }
+  ],
+  "next_steps": [
+    "Swap the placeholder in-app mascot for this drawing (components/mascot.rs)",
+    "Check trademark availability for the name and mark",
+    "Draw a second pose (celebrate / ponder) so the logo can animate"
+  ],
+  "recommendation": "One direction, built to grow: the same drawing is the Dock icon, the favicon and the in-app mascot."
+}

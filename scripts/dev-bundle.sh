@@ -17,6 +17,9 @@ cp target/debug/wackdepot "$APP/Contents/MacOS/wackdepot"
 # configuration, never a user's access or refresh token.
 rm -f "$APP/Contents/Resources/github-oauth.json"
 target/debug/wackdepot --github-export-client development "$APP/Contents/Resources/github-oauth.json" || true
+if [ -d "$ROOT/assets/icon.iconset" ]; then
+    iconutil -c icns "$ROOT/assets/icon.iconset" -o "$ROOT/assets/icon.icns"
+fi
 [ -f "$ROOT/assets/icon.icns" ] && cp "$ROOT/assets/icon.icns" "$APP/Contents/Resources/icon.icns"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
