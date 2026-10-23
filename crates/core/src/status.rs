@@ -102,14 +102,16 @@ pub struct RepoStatus {
 /// bucketed into `conflicted` / `staged` / `unstaged` / `untracked`.
 pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     // --no-optional-locks: a background status must never take index.lock
-    // and race a stage/commit the user just clicked.
+    // and race a stage/commit the user just clicked. --untracked-files=all
+    // lists each untracked file, not collapsed dirs — a bare "docs/" entry
+    // can't be diffed, staged piecemeal, or counted like a file can.
     let out = Git::new(repo).run([
         "--no-optional-locks",
         "status",
         "--porcelain=v2",
         "-z",
         "--branch",
-        "--untracked-files=normal",
+        "--untracked-files=all",
     ])?;
     let mut s = parse_status_porcelain(&out.stdout);
     s.operation = operation(repo);
@@ -499,6 +501,23 @@ mod tests {
         let s = status(dir.path()).unwrap();
         assert_eq!(s.unstaged.len(), 1);
         assert_eq!(s.unstaged[0].kind, ChangeKind::Modified);
+    }
+
+    #[test]
+    fn untracked_dirs_list_their_files() {
+        let (dir, _g) = temp_repo();
+        write_file(dir.path(), "docs/readme.md", "# docs\n");
+        write_file(dir.path(), "docs/deep/inner.txt", "x\n");
+        write_file(dir.path(), "loose.txt", "y\n");
+        let s = status(dir.path()).unwrap();
+        let mut paths: Vec<&str> = s.untracked.iter().map(|f| f.path.as_str()).collect();
+        paths.sort();
+        // Each file, never a collapsed "docs/" — a directory row has no
+        // diff and can't be toggled or counted like a file.
+        assert_eq!(
+            paths,
+            ["docs/deep/inner.txt", "docs/readme.md", "loose.txt"]
+        );
     }
 
     #[test]

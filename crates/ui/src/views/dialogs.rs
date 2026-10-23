@@ -120,9 +120,15 @@ fn tilde(p: &std::path::Path) -> String {
 }
 
 fn untilde(s: &str) -> PathBuf {
-    match s.trim().strip_prefix("~/") {
-        Some(rest) => home().join(rest),
-        None => PathBuf::from(s.trim()),
+    let s = s.trim();
+    match s.strip_prefix('~') {
+        Some("") => home(),
+        // `~/…` expands against home; the leading slash can't be joined
+        // directly (an absolute component replaces the base).
+        Some(rest) if rest.starts_with('/') => home().join(&rest[1..]),
+        // `~other` and plain words stay literal — the caller rejects
+        // non-absolute results.
+        _ => PathBuf::from(s),
     }
 }
 
@@ -443,15 +449,32 @@ impl NewRepoDialog {
             cx.notify();
             return;
         }
-        let path = untilde(&parent).join(&name);
-        if path.exists()
-            && std::fs::read_dir(&path)
-                .map(|mut d| d.next().is_some())
-                .unwrap_or(false)
-        {
-            self.error = Some(format!("{} already exists and isn't empty.", tilde(&path)).into());
+        let parent = untilde(&parent);
+        if !parent.is_absolute() {
+            // A relative base silently lands in the app's working directory
+            // — nowhere the user can find. Ask for an absolute path instead.
+            self.error =
+                Some("The folder to create in must be an absolute path (or start with ~/).".into());
             cx.notify();
             return;
+        }
+        let path = parent.join(&name);
+        if path.exists() {
+            match std::fs::read_dir(&path).map(|mut d| d.next().is_some()) {
+                Ok(true) => {
+                    self.error =
+                        Some(format!("{} already exists and isn't empty.", tilde(&path)).into());
+                    cx.notify();
+                    return;
+                }
+                Err(e) => {
+                    self.error =
+                        Some(format!("Couldn't look inside {} — {e}.", tilde(&path)).into());
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
         }
         let opts = CreateOptions {
             description: self.description.read(cx).content().trim().to_string(),
@@ -1961,5 +1984,29 @@ impl Render for ScanDialog {
             ))
             .child(body)
             .child(footer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::untilde;
+    use std::path::PathBuf;
+
+    #[test]
+    fn untilde_expands_home_forms() {
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        assert_eq!(untilde("~/Documents/GitHub"), home.join("Documents/GitHub"));
+        assert_eq!(untilde("~"), home.clone());
+        // Whitespace around the path doesn't defeat the expansion.
+        assert_eq!(untilde("  ~/code  "), home.join("code"));
+    }
+
+    #[test]
+    fn untilde_leaves_other_paths_alone() {
+        // `~name` isn't this user's home — it stays literal so the caller
+        // can reject it instead of creating a `~name` folder somewhere.
+        assert_eq!(untilde("~root/code"), PathBuf::from("~root/code"));
+        assert_eq!(untilde("/tmp/x"), PathBuf::from("/tmp/x"));
+        assert_eq!(untilde("relative"), PathBuf::from("relative"));
     }
 }

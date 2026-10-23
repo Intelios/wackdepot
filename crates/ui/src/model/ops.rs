@@ -684,9 +684,10 @@ impl RepoModel {
             BusyOp::Other("Creating repository"),
             move |_, _| {
                 let warnings = sync::create_repo_with(&path, &opts)?;
-                let toast = match warnings.first() {
-                    Some(w) => format!("Repository created — {w}"),
-                    None => "Repository created.".to_string(),
+                let toast = match warnings.as_slice() {
+                    [] => "Repository created.".to_string(),
+                    [w] => format!("Repository created — {w}"),
+                    ws => format!("Repository created — {}", ws.join(" ")),
                 };
                 Ok(Done {
                     toast: Some(toast),

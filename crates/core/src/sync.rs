@@ -188,6 +188,14 @@ pub struct CreateOptions {
 /// returned warnings so the UI can toast it.
 pub fn create_repo_with(path: &Path, opts: &CreateOptions) -> Result<Vec<String>, String> {
     create_repo(path)?;
+    // Init said nothing — make sure a repo is really there before
+    // scaffolding into it, so a silent init can't look like an empty repo.
+    if !crate::repo::is_repo(path) {
+        return Err(format!(
+            "Couldn't create the repository — {} has no .git after init.",
+            path.display()
+        ));
+    }
     let mut warnings = Vec::new();
     let mut note = |result: Result<(), String>| {
         if let Err(e) = result {
@@ -226,7 +234,23 @@ pub fn create_repo_with(path: &Path, opts: &CreateOptions) -> Result<Vec<String>
         note(write_gitattributes(path));
     }
     if let Err(e) = initial_commit(path) {
-        warnings.push(e);
+        // The commit is the point of the dialog — name it in the warning so
+        // the toast can't read like a mysterious empty repo.
+        warnings.push(format!("Initial commit failed — {e}"));
+    } else {
+        // `initial_commit` quietly skips an empty index — without a HEAD
+        // check, a repo where every scaffold was ignored looks "created"
+        // but shows nothing, forever puzzling.
+        let has_head = Git::new(path)
+            .try_run(["rev-parse", "--verify", "--quiet", "HEAD"])
+            .map(|o| o.ok())
+            .unwrap_or(false);
+        if !has_head {
+            warnings.push(
+                "Initial commit was skipped — every file ended up ignored, so the repository is empty."
+                    .into(),
+            );
+        }
     }
     Ok(warnings)
 }
