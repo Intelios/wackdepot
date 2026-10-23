@@ -301,6 +301,22 @@ impl RepoModel {
             .count()
     }
 
+    /// The one file the next commit picks up — `None` unless exactly one
+    /// is checked. The composer names a one-file commit after it.
+    pub fn sole_included_file(&self) -> Option<FileChange> {
+        let mut only = None;
+        for (_, change) in self.commit_files() {
+            if self.excluded.contains(&change.path) {
+                continue;
+            }
+            if only.is_some() {
+                return None;
+            }
+            only = Some(change);
+        }
+        only
+    }
+
     /// Why merging can't start right now, as a user-facing sentence —
     /// `None` when the merge dialog may open.
     pub fn merge_blocker(&self) -> Option<String> {

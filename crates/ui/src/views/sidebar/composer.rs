@@ -3,10 +3,11 @@
 //! controls, and the commit pill. Fields clear only when the commit lands.
 
 use gpui::{
-    AppContext as _, Context, Entity, FontWeight, IntoElement, ParentElement, Render, Styled,
+    App, AppContext as _, Context, Entity, FontWeight, IntoElement, ParentElement, Render, Styled,
     Window, div, prelude::*, px,
 };
 use wackdepot_core::commit::CommitOptions;
+use wackdepot_core::status::{ChangeKind, FileChange};
 
 use crate::components::button::{Variant, button, icon_button};
 use crate::components::seam::seam;
@@ -15,6 +16,9 @@ use crate::icons::icon;
 use crate::model::{Beat, Bucket, BusyOp, RepoEvent, RepoModel};
 use crate::motion::{LINEAR, Motion, POP_STRONG};
 use crate::theme::{ActiveTheme, metrics};
+
+/// The summary field's prompt when no one-file title applies.
+const SUMMARY_PLACEHOLDER: &str = "Summary (required)";
 
 pub struct Composer {
     model: Entity<RepoModel>,
@@ -30,7 +34,7 @@ pub struct Composer {
 
 impl Composer {
     pub fn new(model: Entity<RepoModel>, cx: &mut Context<Self>) -> Self {
-        let summary = cx.new(|cx| TextInput::new("Summary (required)", cx));
+        let summary = cx.new(|cx| TextInput::new(SUMMARY_PLACEHOLDER, cx));
         let description = cx.new(|cx| TextInput::new("Description", cx).multiline(2, 8));
         let coauthor_input = cx.new(|cx| TextInput::new("Name <email@example.com>", cx));
         cx.subscribe(&summary, |this: &mut Self, _, e: &TextInputEvent, cx| {
@@ -63,11 +67,15 @@ impl Composer {
                 cx.notify();
             }
             RepoEvent::Opened => this.reset(cx),
-            RepoEvent::Snapshot | RepoEvent::Busy => cx.notify(),
+            RepoEvent::Snapshot => {
+                this.sync_placeholder(cx);
+                cx.notify();
+            }
+            RepoEvent::Busy => cx.notify(),
             _ => {}
         })
         .detach();
-        Self {
+        let mut this = Self {
             model,
             summary,
             description,
@@ -77,7 +85,9 @@ impl Composer {
             adding_coauthor: false,
             error: None,
             motion: Motion::default(),
-        }
+        };
+        this.sync_placeholder(cx);
+        this
     }
 
     fn reset(&mut self, cx: &mut Context<Self>) {
@@ -86,7 +96,38 @@ impl Composer {
         self.amend = false;
         self.co_authors.clear();
         self.adding_coauthor = false;
+        self.summary
+            .update(cx, |i, cx| i.set_placeholder(SUMMARY_PLACEHOLDER, cx));
         cx.notify();
+    }
+
+    /// Pick up the title (or the plain prompt) for the current file
+    /// selection. Typed text is never touched — the title is only the
+    /// placeholder, and the commit falls back to it when the field is empty.
+    fn sync_placeholder(&mut self, cx: &mut Context<Self>) {
+        let placeholder = if self.amend {
+            SUMMARY_PLACEHOLDER.to_string()
+        } else {
+            self.model.read(cx).sole_included_file().map_or_else(
+                || SUMMARY_PLACEHOLDER.to_string(),
+                |change| summary_for(&change),
+            )
+        };
+        if self.summary.read(cx).placeholder() != placeholder {
+            self.summary
+                .update(cx, |i, cx| i.set_placeholder(placeholder, cx));
+        }
+    }
+
+    /// Describes a one-file commit the way GitHub Desktop does.
+    fn auto_summary(&self, cx: &App) -> Option<String> {
+        if self.amend {
+            return None;
+        }
+        self.model
+            .read(cx)
+            .sole_included_file()
+            .map(|change| summary_for(&change))
     }
 
     /// Files the commit button will pick up — the checked ones.
@@ -96,22 +137,29 @@ impl Composer {
 
     pub fn can_commit(&self, cx: &App) -> bool {
         let m = self.model.read(cx);
-        let has_summary = !self.summary.read(cx).content().trim().is_empty();
+        let typed = self.summary.read(cx);
+        let has_summary = !typed.content().trim().is_empty()
+            || (typed.is_empty() && !self.amend && m.sole_included_file().is_some());
         let conflicts = !m.snap.bucket(Bucket::Conflicted).is_empty();
-        has_summary && (self.included(cx) > 0 || self.amend) && !conflicts && m.busy.is_none()
+        has_summary && (m.included_count() > 0 || self.amend) && !conflicts && m.busy.is_none()
     }
 
     /// ⌘↩ and the commit pill.
     pub fn commit(&mut self, cx: &mut Context<Self>) {
-        if self.summary.read(cx).content().trim().is_empty() {
+        let typed = self.summary.read(cx).content().to_string();
+        let summary = if typed.is_empty() {
+            self.auto_summary(cx)
+        } else {
+            (!typed.trim().is_empty()).then_some(typed)
+        };
+        let Some(summary) = summary else {
             self.error = Some("Write a summary first.".into());
             cx.notify();
             return;
-        }
+        };
         if !self.can_commit(cx) {
             return;
         }
-        let summary = self.summary.read(cx).content().to_string();
         let description = self.description.read(cx).content().to_string();
         let opts = CommitOptions {
             amend: self.amend,
@@ -144,6 +192,7 @@ impl Composer {
                 .detach();
             }
         }
+        self.sync_placeholder(cx);
         cx.notify();
     }
 
@@ -164,14 +213,70 @@ impl Composer {
     }
 }
 
-use gpui::App;
-
 /// `Name <email>` → `(name, email)`.
 fn parse_person(s: &str) -> Option<(String, String)> {
     let (name, rest) = s.split_once('<')?;
     let email = rest.strip_suffix('>')?.trim();
     let name = name.trim();
     (!name.is_empty() && email.contains('@')).then(|| (name.to_string(), email.to_string()))
+}
+
+/// The title GitHub Desktop suggests when one file is in the commit.
+fn summary_for(change: &FileChange) -> String {
+    let verb = match change.kind {
+        ChangeKind::Added => "Create",
+        ChangeKind::Deleted => "Delete",
+        _ => "Update",
+    };
+    let name = change.path.rsplit('/').next().unwrap_or(&change.path);
+    format!("{verb} {name}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change(path: &str, kind: ChangeKind) -> FileChange {
+        FileChange {
+            path: path.into(),
+            orig_path: None,
+            x: '.',
+            y: 'M',
+            kind,
+        }
+    }
+
+    #[test]
+    fn a_one_file_commit_is_named_after_the_file() {
+        assert_eq!(
+            summary_for(&change(".gdignore", ChangeKind::Added)),
+            "Create .gdignore"
+        );
+        assert_eq!(
+            summary_for(&change(".gitignore", ChangeKind::Modified)),
+            "Update .gitignore"
+        );
+        assert_eq!(
+            summary_for(&change("old notes.md", ChangeKind::Deleted)),
+            "Delete old notes.md"
+        );
+    }
+
+    #[test]
+    fn titles_use_the_basename_and_desktops_default_verb() {
+        assert_eq!(
+            summary_for(&change("crates/ui/src/main.rs", ChangeKind::Modified)),
+            "Update main.rs"
+        );
+        assert_eq!(
+            summary_for(&change("src/new name.rs", ChangeKind::Renamed)),
+            "Update new name.rs"
+        );
+        assert_eq!(
+            summary_for(&change("assets/icon.svg", ChangeKind::TypeChanged)),
+            "Update icon.svg"
+        );
+    }
 }
 
 impl Render for Composer {

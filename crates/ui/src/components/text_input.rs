@@ -212,6 +212,10 @@ impl TextInput {
         self.scroll = px(0.);
     }
 
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
     pub fn set_placeholder(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.placeholder = text.into();
         cx.notify();

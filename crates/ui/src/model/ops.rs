@@ -332,8 +332,8 @@ impl RepoModel {
             for (_, f) in self.commit_files() {
                 self.excluded.insert(f.path);
             }
-            cx.emit(RepoEvent::Snapshot);
         }
+        cx.emit(RepoEvent::Snapshot);
         cx.notify();
     }
 
