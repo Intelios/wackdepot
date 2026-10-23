@@ -6311,7 +6311,7 @@ dependencies = [
 
 [[package]]
 name = "wackdepot"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "wackdepot-github",
  "wackdepot-ui",
@@ -6319,7 +6319,7 @@ dependencies = [
 
 [[package]]
 name = "wackdepot-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "similar",
@@ -6328,7 +6328,7 @@ dependencies = [
 
 [[package]]
 name = "wackdepot-github"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "rand 0.8.8",
@@ -6344,7 +6344,7 @@ dependencies = [
 
 [[package]]
 name = "wackdepot-syntax"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "syntect",
  "two-face",
@@ -6352,7 +6352,7 @@ dependencies = [
 
 [[package]]
 name = "wackdepot-ui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "gpui",
  "gpui_platform",
