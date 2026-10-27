@@ -12,7 +12,7 @@ pub mod selection;
 pub mod snapshot;
 pub mod web;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -174,6 +174,11 @@ pub struct RepoModel {
     /// is in; a path disappears from here the moment it isn't a change
     /// any more.
     pub excluded: HashSet<String>,
+    /// The highlighted file rows — `selection` (the file the diff card
+    /// follows) is always one of them, ⇧/⌘ clicks grow the rest.
+    pub selected_files: BTreeSet<String>,
+    /// The path ⇧-click ranges start from (last unmodified pick).
+    anchor: Option<String>,
     remembered: [Option<Selection>; 3],
     pub diff: DiffState,
     diff_gen: u64,
@@ -206,6 +211,8 @@ impl RepoModel {
             tab: Tab::Changes,
             selection: None,
             excluded: HashSet::new(),
+            selected_files: BTreeSet::new(),
+            anchor: None,
             remembered: [None, None, None],
             diff: DiffState::Empty,
             diff_gen: 0,
@@ -373,6 +380,8 @@ impl RepoModel {
         self.snap = Arc::default();
         self.loaded = false;
         self.selection = None;
+        self.selected_files.clear();
+        self.anchor = None;
         self.excluded.clear();
         self.remembered = [None, None, None];
         self.diff = DiffState::Empty;
@@ -390,6 +399,8 @@ impl RepoModel {
             self.snap = Arc::default();
             self.loaded = false;
             self.selection = None;
+            self.selected_files.clear();
+            self.anchor = None;
             self.excluded.clear();
             self.diff = DiffState::Empty;
             self.watcher = None;
@@ -500,19 +511,31 @@ impl RepoModel {
                 *slot = selection::repair(sel, &prev, &self.snap);
             }
         }
-        // An exclusion ends when the file stops being a change.
+        // An exclusion ends when the file stops being a change (a
+        // conflicted path was never in it).
         if let Some(s) = self.snap.status.as_ref() {
-            self.excluded.retain(|p| {
+            let changed = |p: &String| {
                 s.staged.iter().any(|f| &f.path == p)
                     || s.unstaged.iter().any(|f| &f.path == p)
                     || s.untracked.iter().any(|f| &f.path == p)
-            });
+            };
+            self.excluded.retain(|p| changed(p));
+            // Discarded or committed rows leave the multi-selection, but
+            // a conflicted or moved (staged/unstaged) path stays selected
+            // by path.
+            self.selected_files
+                .retain(|p| changed(p) || s.conflicted.iter().any(|f| &f.path == p));
         } else {
             self.excluded.clear();
+            self.selected_files.clear();
         }
         cx.emit(RepoEvent::Snapshot);
         let changed = repaired != self.selection;
         self.selection = repaired;
+        // The file the diff shows always reads as selected.
+        if let Some(Selection::File { path, .. }) = &self.selection {
+            self.selected_files.insert(path.clone());
+        }
         if changed {
             cx.emit(RepoEvent::Selection);
         }
@@ -536,18 +559,251 @@ impl RepoModel {
             }),
             Tab::PullRequests => None,
         });
+        // A restored file selection rejoins its set; a commit leaves the
+        // set parked for when Changes comes back.
+        if let Some(Selection::File { path, .. }) = &self.selection {
+            if self.selected_files.is_empty() {
+                self.selected_files.insert(path.clone());
+            } else if !self.selected_files.contains(path) {
+                // The remembered file is gone — the set points the diff
+                // at one of its own instead.
+                if let Some(next) = self
+                    .selected_files
+                    .iter()
+                    .next()
+                    .cloned()
+                    .and_then(|p| self.bucket_of(&p).map(|b| (p, b)))
+                {
+                    self.selection = Some(Selection::File {
+                        path: next.0,
+                        bucket: next.1,
+                    });
+                }
+            }
+        }
         cx.emit(RepoEvent::Selection);
         self.load_diff(cx);
         cx.notify();
     }
 
-    pub fn select(&mut self, sel: Option<Selection>, cx: &mut Context<Self>) {
+    /// Change the selection (and nothing else), reporting whether it
+    /// moved. `select` is the single-select entry point — every click
+    /// that isn't a multi-select gesture lands there; the multi-select
+    /// handlers below call this to move the diff card without touching
+    /// the set.
+    fn set_selection(&mut self, sel: Option<Selection>, cx: &mut Context<Self>) -> bool {
         if self.selection == sel {
-            return;
+            return false;
         }
         self.selection = sel;
         cx.emit(RepoEvent::Selection);
         self.load_diff(cx);
+        cx.notify();
+        true
+    }
+
+    /// `set_selection` no-op'd but the set changed — repaint anyway.
+    fn set_repainted(&mut self, moved: bool, cx: &mut Context<Self>) {
+        if !moved {
+            cx.emit(RepoEvent::Selection);
+            cx.notify();
+        }
+    }
+
+    /// A plain pick: select just this one and follow it.
+    pub fn select(&mut self, sel: Option<Selection>, cx: &mut Context<Self>) {
+        let mut set_changed = false;
+        if let Some(Selection::File { path, .. }) = &sel {
+            if self.selected_files.len() != 1 || !self.selected_files.contains(path) {
+                self.selected_files.clear();
+                self.selected_files.insert(path.clone());
+                set_changed = true;
+            }
+            self.anchor = Some(path.clone());
+        }
+        let moved = self.set_selection(sel, cx);
+        if set_changed {
+            self.set_repainted(moved, cx);
+        }
+    }
+
+    /// Which bucket of the Changes list `path` sits in, if it's a change.
+    pub fn bucket_of(&self, path: &str) -> Option<Bucket> {
+        // Unstaged first: a file staged in part shows its pending side,
+        // matching `commit_files`.
+        if self
+            .snap
+            .bucket(Bucket::Unstaged)
+            .iter()
+            .any(|f| f.path == path)
+        {
+            Some(Bucket::Unstaged)
+        } else if self
+            .snap
+            .bucket(Bucket::Untracked)
+            .iter()
+            .any(|f| f.path == path)
+        {
+            Some(Bucket::Untracked)
+        } else if self
+            .snap
+            .bucket(Bucket::Staged)
+            .iter()
+            .any(|f| f.path == path)
+        {
+            Some(Bucket::Staged)
+        } else if self
+            .snap
+            .bucket(Bucket::Conflicted)
+            .iter()
+            .any(|f| f.path == path)
+        {
+            Some(Bucket::Conflicted)
+        } else {
+            None
+        }
+    }
+
+    /// A file row click, with the macOS multi-select conventions:
+    /// plain click singles out, ⇧-click ranges from the anchor, ⌘-click
+    /// toggles one row in and out, ⌘⇧-click adds a range. `order` is the
+    /// visible `(path, bucket)` list top-to-bottom — ranges run along it.
+    pub fn click_file(
+        &mut self,
+        path: String,
+        bucket: Bucket,
+        mods: gpui::Modifiers,
+        order: &[(String, Bucket)],
+        cx: &mut Context<Self>,
+    ) {
+        let sel = Selection::File {
+            path: path.clone(),
+            bucket,
+        };
+        if !mods.modified() {
+            self.anchor = Some(path);
+            self.select(Some(sel), cx);
+            return;
+        }
+        if mods.shift {
+            let from = self
+                .anchor
+                .as_ref()
+                .and_then(|a| order.iter().position(|(p, _)| p == a))
+                .or_else(|| {
+                    if let Some(Selection::File { path: p, .. }) = &self.selection {
+                        order.iter().position(|(q, _)| q == p)
+                    } else {
+                        None
+                    }
+                });
+            let to = order.iter().position(|(p, _)| p == &path);
+            if let (Some(a), Some(b)) = (from, to) {
+                let (lo, hi) = (a.min(b), a.max(b));
+                if !mods.platform {
+                    self.selected_files.clear();
+                }
+                self.selected_files
+                    .extend(order[lo..=hi].iter().map(|(p, _)| p.clone()));
+                let moved = self.set_selection(Some(sel), cx);
+                self.set_repainted(moved, cx);
+                return;
+            }
+            if !mods.platform {
+                // No anchor in view — a plain click, anchor and all.
+                self.anchor = Some(path);
+                self.select(Some(sel), cx);
+                return;
+            }
+        }
+        if mods.platform {
+            // ⌘: flip this row's membership; the diff follows whichever
+            // row survives — including the deselected one's neighbour.
+            if self.selected_files.remove(&path) {
+                let next = order
+                    .iter()
+                    .find(|(p, _)| self.selected_files.contains(p))
+                    .cloned()
+                    .or_else(|| {
+                        self.selected_files
+                            .iter()
+                            .next()
+                            .cloned()
+                            .and_then(|p| self.bucket_of(&p).map(|b| (p, b)))
+                    });
+                self.anchor = Some(path);
+                let moved = self.set_selection(
+                    next.map(|(p, b)| Selection::File { path: p, bucket: b }),
+                    cx,
+                );
+                self.set_repainted(moved, cx);
+            } else {
+                self.selected_files.insert(path.clone());
+                self.anchor = Some(path);
+                let moved = self.set_selection(Some(sel), cx);
+                self.set_repainted(moved, cx);
+            }
+            return;
+        }
+        // Any other modifier (alt, ctrl) means a plain click.
+        self.anchor = Some(path);
+        self.select(Some(sel), cx);
+    }
+
+    /// Select every visible file (`order` skips collapsed groups).
+    pub fn select_all_files(&mut self, order: &[(String, Bucket)], cx: &mut Context<Self>) {
+        if order.is_empty() {
+            return;
+        }
+        self.selected_files = order.iter().map(|(p, _)| p.clone()).collect();
+        // The diff card follows the current file when it's in the set,
+        // otherwise it falls to the first row.
+        let keep = matches!(&self.selection, Some(Selection::File { path, .. })
+            if self.selected_files.contains(path));
+        let sel = if keep {
+            self.selection.clone()
+        } else {
+            order.first().map(|(p, b)| Selection::File {
+                path: p.clone(),
+                bucket: *b,
+            })
+        };
+        let moved = self.set_selection(sel, cx);
+        self.set_repainted(moved, cx);
+    }
+
+    /// Set or clear the commit exclusion of a batch of paths in one go —
+    /// what ⇧-picked rows share when their checkbox or Space is hit.
+    /// Including a file staged only in part stages its rest, same as the
+    /// single-row checkbox does.
+    pub fn set_paths_included(&mut self, paths: &[String], include: bool, cx: &mut Context<Self>) {
+        if include {
+            for p in paths {
+                self.excluded.remove(p);
+            }
+            let partials: Vec<String> = paths
+                .iter()
+                .filter(|p| self.partials().contains(*p))
+                .cloned()
+                .collect();
+            if !partials.is_empty() {
+                self.run(
+                    BusyOp::Other("Staging"),
+                    move |r, _| {
+                        wackdepot_core::stage::stage_paths(r, &partials)?;
+                        Ok(Done::quiet().beat(Beat::Staged {
+                            paths: partials.clone(),
+                        }))
+                    },
+                    cx,
+                );
+            }
+        } else {
+            for p in paths {
+                self.excluded.insert(p.clone());
+            }
+        }
+        cx.emit(RepoEvent::Snapshot);
         cx.notify();
     }
 
@@ -655,6 +911,7 @@ impl RepoModel {
             identity: prev.identity.clone(),
             tip_unpushed: prev.tip_unpushed,
             github: prev.github.clone(),
+            tags: prev.tags.clone(),
             remotes: prev.remotes.clone(),
         });
         if let Some(sel) = &self.selection {

@@ -2,6 +2,7 @@
 //! Fields are separated with `%1f` so names containing spaces or punctuation
 //! parse cleanly.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::git::Git;
@@ -117,6 +118,32 @@ pub fn checkout(repo: &Path, name: &str) -> Result<(), String> {
 pub fn delete_branch(repo: &Path, name: &str, force: bool) -> Result<(), String> {
     Git::new(repo).run(["branch", if force { "-D" } else { "-d" }, name])?;
     Ok(())
+}
+
+/// `git for-each-ref` tag layout: tag object SHA, peeled commit SHA, name.
+const TAG_FMT: &str = "%(objectname)%1f%(*objectname)%1f%(refname:short)";
+
+/// Every tag keyed by the commit it names — lightweight tags land on their
+/// object directly, annotated ones on the peeled `*objectname`.
+pub fn tags_by_commit(repo: &Path) -> Result<HashMap<String, Vec<String>>, String> {
+    let out = Git::new(repo).run(["for-each-ref", &format!("--format={TAG_FMT}"), "refs/tags"])?;
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for line in out.stdout.lines() {
+        let f: Vec<&str> = line.split('\x1f').collect();
+        if f.len() < 3 || f[2].is_empty() {
+            continue;
+        }
+        // Annotated: the peeled field is the tagged commit; lightweight
+        // tags carry the commit (or other object) in %(objectname).
+        let sha = if f[1].is_empty() { f[0] } else { f[1] };
+        map.entry(sha.to_string())
+            .or_default()
+            .push(f[2].to_string());
+    }
+    for tags in map.values_mut() {
+        tags.sort();
+    }
+    Ok(map)
 }
 
 #[cfg(test)]
@@ -252,5 +279,38 @@ mod tests {
         let tags = g.run(["tag", "-n1"]).unwrap().stdout;
         assert!(tags.contains("v1") && tags.contains("Release two"));
         assert!(create_tag(dir.path(), "v1", "HEAD", None).is_err());
+    }
+
+    #[test]
+    fn tags_keyed_by_commit() {
+        let (dir, g) = temp_repo();
+        write_file(dir.path(), "a.txt", "1\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "init", "").unwrap();
+        let first = g
+            .run(["rev-parse", "HEAD"])
+            .unwrap()
+            .stdout
+            .trim()
+            .to_string();
+        write_file(dir.path(), "a.txt", "2\n");
+        stage_all(dir.path()).unwrap();
+        commit(dir.path(), "second", "").unwrap();
+        let second = g
+            .run(["rev-parse", "HEAD"])
+            .unwrap()
+            .stdout
+            .trim()
+            .to_string();
+
+        // One of each flavour on the release commit.
+        create_tag(dir.path(), "v2.0", "HEAD", Some("Release 2.0")).unwrap();
+        create_tag(dir.path(), "latest", "HEAD", None).unwrap();
+        create_tag(dir.path(), "v1.0", &first, None).unwrap();
+
+        let map = tags_by_commit(dir.path()).unwrap();
+        assert_eq!(map[&second], vec!["latest", "v2.0"]);
+        assert_eq!(map[&first], vec!["v1.0"]);
+        assert!(map.get("").is_none());
     }
 }

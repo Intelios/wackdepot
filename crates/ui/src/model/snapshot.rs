@@ -1,6 +1,6 @@
 //! Everything read from git for the open repository in one refresh.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use wackdepot_core::{branch, commit, graph, remote, stash, status};
@@ -28,6 +28,8 @@ pub struct Snapshot {
     /// `https://github.com/owner/name` when a remote is hosted there —
     /// the base for every "View on GitHub" link.
     pub github: Option<String>,
+    /// Tag names by the commit they point at — History marks releases.
+    pub tags: HashMap<String, Vec<String>>,
     /// Configured remotes — empty means the repo has nowhere to push yet,
     /// which is what turns "Publish branch" into "Publish repository".
     pub remotes: Vec<remote::Remote>,
@@ -50,6 +52,7 @@ impl Snapshot {
             identity: commit::author(repo).ok(),
             tip_unpushed: commit::tip_is_unpushed(repo).unwrap_or(false),
             github: super::web::repository_url(repo),
+            tags: branch::tags_by_commit(repo).unwrap_or_default(),
             remotes: remote::list(repo).unwrap_or_default(),
             status: Some(status),
         })

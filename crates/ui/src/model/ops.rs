@@ -364,6 +364,24 @@ impl RepoModel {
         }
     }
 
+    /// `git add -A` every picked conflicted path — the batch form of a
+    /// single row's "Mark resolved".
+    pub fn mark_resolved(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            return;
+        }
+        self.run(
+            BusyOp::Other("Resolving"),
+            move |r, _| {
+                stage::stage_paths(r, &paths)?;
+                Ok(Done::quiet().beat(Beat::Staged {
+                    paths: paths.clone(),
+                }))
+            },
+            cx,
+        );
+    }
+
     /// Resolve one conflict wholesale: take a side's version
     /// (`checkout --ours/--theirs`) or stage the deletion.
     pub fn resolve_conflict(
@@ -550,6 +568,23 @@ impl RepoModel {
                 move |r, _| {
                     stage::discard_fully(r, &path)?;
                     Ok(Done::quiet())
+                },
+                cx,
+            ),
+            ConfirmAction::DiscardFiles { tracked, untracked } => self.run(
+                BusyOp::Other("Discarding"),
+                move |r, _| {
+                    for path in &tracked {
+                        stage::discard_fully(r, path)?;
+                    }
+                    for path in &untracked {
+                        stage::trash_file(r, path)?;
+                    }
+                    let n = tracked.len() + untracked.len();
+                    Ok(Done::toast(format!(
+                        "Discarded {n} file{}.",
+                        if n == 1 { "" } else { "s" }
+                    )))
                 },
                 cx,
             ),
@@ -750,6 +785,26 @@ impl RepoModel {
         );
     }
 
+    /// Add several untracked paths to `.gitignore` in one write — the
+    /// multi-select form of "Ignore file".
+    pub fn ignore_paths(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            return;
+        }
+        self.run(
+            BusyOp::Other("Updating .gitignore"),
+            move |r, _| {
+                let patterns: Vec<String> = paths.iter().map(|p| gitignore::escape(p)).collect();
+                gitignore::update_gitignore(r, &patterns)?;
+                Ok(Done::toast(format!(
+                    "Added {} files to .gitignore.",
+                    patterns.len()
+                )))
+            },
+            cx,
+        );
+    }
+
     /// Add `path` to the repo's `.gitignore` — itself (`Ignore file`) or
     /// its extension (`Ignore all .ext files`). Only offered on untracked
     /// files, where the effect is visible; on a tracked file a gitignore
@@ -777,13 +832,20 @@ impl RepoModel {
 
     /// Show one file of the repo in Finder.
     pub fn reveal(&mut self, path: &str, cx: &mut Context<Self>) {
-        if let Some(repo) = &self.repo
-            && std::process::Command::new("open")
-                .arg("-R")
-                .arg(repo.join(path))
-                .spawn()
-                .is_err()
-        {
+        self.reveal_paths(&[path.to_string()], cx);
+    }
+
+    /// Show several files in Finder — `open -R` takes them all.
+    pub fn reveal_paths(&mut self, paths: &[String], cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg("-R");
+        for p in paths {
+            cmd.arg(repo.join(p));
+        }
+        if cmd.spawn().is_err() {
             self.notice("Couldn't open Finder.", NoticeKind::Error, cx);
         }
     }

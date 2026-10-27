@@ -10,6 +10,7 @@ use super::graph::{gutter_width, paint_row};
 use super::{ContextTarget, SelectNext, SelectPrev, SidebarView};
 use crate::components::menu::{Popover, menu_row, menu_separator};
 use crate::components::misc::empty_state;
+use crate::icons::icon;
 use crate::model::{ConfirmAction, Selection};
 use crate::theme::ActiveTheme;
 use crate::views::dialogs::NameKind;
@@ -145,12 +146,47 @@ impl SidebarView {
         } else {
             row = row.pl(px(10.));
         }
+        // Release markers: every tag pointing at this commit, capped at
+        // two chips — the rest collapse into `+n`.
+        let tags = snap.tags.get(&c.sha);
+        let tag_pill = |name: &str| {
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(3.))
+                .h(px(15.))
+                .px(px(5.))
+                .rounded(px(4.))
+                .bg(t.pill())
+                .font_family(t.mono.clone())
+                .text_size(px(10.))
+                .text_color(t.text_soft)
+                .child(icon("tag").size(px(9.)).text_color(t.text_dim))
+                .child(name.to_string())
+                .into_any_element()
+        };
+        let mut tag_els: Vec<AnyElement> = tags
+            .map(|v| v.iter().take(2).map(|n| tag_pill(n)).collect())
+            .unwrap_or_default();
+        let extra = tags.map(|v| v.len().saturating_sub(2)).unwrap_or(0);
+        if extra > 0 {
+            tag_els.push(
+                div()
+                    .flex_none()
+                    .text_size(px(10.))
+                    .text_color(t.text_faint)
+                    .child(format!("+{extra}"))
+                    .into_any_element(),
+            );
+        }
         let meta = div()
             .flex()
             .items_center()
             .gap(px(6.))
             .text_size(px(11.5))
             .text_color(t.text_dim)
+            .children(tag_els)
             .child(div().truncate().child(c.author_name.clone()))
             .child(div().text_color(t.text_faint).child("·"))
             .child(div().flex_none().child(short_age(&c.authored_at)))

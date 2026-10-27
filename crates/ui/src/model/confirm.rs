@@ -7,6 +7,12 @@ pub enum ConfirmAction {
     DiscardFile {
         path: String,
     },
+    /// A multi-file discard: `tracked` paths get `git restore`,
+    /// `untracked` paths go to the trash folder.
+    DiscardFiles {
+        tracked: Vec<String>,
+        untracked: Vec<String>,
+    },
     TrashFile {
         path: String,
     },
@@ -56,6 +62,14 @@ impl ConfirmAction {
     pub fn title(&self) -> String {
         match self {
             Self::DiscardFile { path } => format!("Discard changes to {}?", file_name(path)),
+            Self::DiscardFiles { tracked, untracked } => {
+                let n = tracked.len() + untracked.len();
+                if tracked.is_empty() {
+                    format!("Move {n} files to the trash?")
+                } else {
+                    format!("Discard changes to {n} files?")
+                }
+            }
             Self::TrashFile { path } => format!("Move {} to the trash?", file_name(path)),
             Self::DiscardAll => "Discard all changes?".into(),
             Self::DiscardHunk { .. } => "Discard this hunk?".into(),
@@ -82,6 +96,26 @@ impl ConfirmAction {
         match self {
             Self::DiscardFile { .. } => {
                 "The file goes back to its last committed version. This can't be undone.".into()
+            }
+            Self::DiscardFiles { tracked, untracked } => {
+                match (tracked.is_empty(), untracked.is_empty()) {
+                    (true, false) => {
+                        "They're untracked, so they move to WackDepot's trash folder instead of being deleted.".into()
+                    }
+                    (false, true) => {
+                        "Each file goes back to its last committed version. This can't be undone."
+                            .into()
+                    }
+                    (false, false) => format!(
+                        "{} {} back to their last committed version{} — that can't be undone. {} {} to WackDepot's trash folder.",
+                        plural(tracked.len(), "tracked file"),
+                        if tracked.len() == 1 { "goes" } else { "go" },
+                        if tracked.len() == 1 { "" } else { "s" },
+                        plural(untracked.len(), "untracked file"),
+                        if untracked.len() == 1 { "moves" } else { "move" },
+                    ),
+                    _ => String::new(),
+                }
             }
             Self::DiscardHunk { .. } | Self::DiscardLines { .. } => {
                 "The working copy goes back to the last staged or committed version. This can't be undone.".into()
@@ -116,6 +150,13 @@ impl ConfirmAction {
             | Self::DiscardAll
             | Self::DiscardHunk { .. }
             | Self::DiscardLines { .. } => "Discard",
+            Self::DiscardFiles { tracked, .. } => {
+                if tracked.is_empty() {
+                    "Move to trash"
+                } else {
+                    "Discard"
+                }
+            }
             Self::TrashFile { .. } => "Move to trash",
             Self::DeleteBranch { .. } | Self::ForceDeleteBranch { .. } => "Delete",
             Self::AbortOperation { .. } => "Abort",
@@ -142,4 +183,39 @@ fn side_label(side: ConflictSide) -> &'static str {
 
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+/// `n file`/`n files` for batch copy.
+fn plural(n: usize, what: &str) -> String {
+    format!("{n} {what}{}", if n == 1 { "" } else { "s" })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn files(tracked: &[&str], untracked: &[&str]) -> ConfirmAction {
+        ConfirmAction::DiscardFiles {
+            tracked: tracked.iter().map(|s| s.to_string()).collect(),
+            untracked: untracked.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn batch_discard_copy() {
+        let tracked_only = files(&["a.rs", "b.rs", "c.rs"], &[]);
+        assert_eq!(tracked_only.title(), "Discard changes to 3 files?");
+        assert!(tracked_only.body().contains("can't be undone"));
+        assert_eq!(tracked_only.confirm_label(), "Discard");
+
+        let untracked_only = files(&[], &["new.md", "other.md"]);
+        assert_eq!(untracked_only.title(), "Move 2 files to the trash?");
+        assert!(untracked_only.body().contains("trash folder"));
+        assert_eq!(untracked_only.confirm_label(), "Move to trash");
+
+        let mixed = files(&["a.rs"], &["n1", "n2"]);
+        assert_eq!(mixed.title(), "Discard changes to 3 files?");
+        assert!(mixed.body().contains("1 tracked file goes back"));
+        assert!(mixed.body().contains("2 untracked files move"));
+    }
 }

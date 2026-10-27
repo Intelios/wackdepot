@@ -1164,7 +1164,23 @@ impl Render for TitlebarView {
         }
         let mut right = div().flex().items_center().gap(px(6.)).pr(px(10.));
         if has_repo {
-            right = right.child(self.sync_pill(window, comet, cx));
+            // The two everyday "open in …" actions, promoted out of the
+            // sync menu: editor and the repo's GitHub page.
+            let on_github = self.model.read(cx).snap.github.is_some();
+            let (m_ed, m_gh) = (self.model.clone(), self.model.clone());
+            right = right
+                .child(
+                    icon_button("tb-editor", "external")
+                        .on_click(move |_, _, cx| m_ed.update(cx, |m, cx| m.open_in_editor(cx))),
+                )
+                .child(
+                    icon_button("tb-github", "globe")
+                        .disabled(!on_github)
+                        .on_click(move |_, _, cx| {
+                            m_gh.update(cx, |m, cx| m.open_on_github(GitHubTarget::Repository, cx))
+                        }),
+                )
+                .child(self.sync_pill(window, comet, cx));
         }
         right = right.child(self.more_button(window, cx));
         drag_strip(

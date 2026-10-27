@@ -27,7 +27,13 @@ use composer::Composer;
 
 actions!(
     sidebar,
-    [SelectPrev, SelectNext, ToggleInclude, DiscardSelected]
+    [
+        SelectPrev,
+        SelectNext,
+        ToggleInclude,
+        DiscardSelected,
+        SelectAll
+    ]
 );
 
 pub fn bind_keys(cx: &mut gpui::App) {
@@ -41,6 +47,7 @@ pub fn bind_keys(cx: &mut gpui::App) {
         gpui::KeyBinding::new("down", SelectNext, Some("Workspace")),
         gpui::KeyBinding::new("space", ToggleInclude, Some("FileList")),
         gpui::KeyBinding::new("cmd-backspace", DiscardSelected, Some("FileList")),
+        gpui::KeyBinding::new("cmd-a", SelectAll, Some("FileList")),
     ]);
 }
 

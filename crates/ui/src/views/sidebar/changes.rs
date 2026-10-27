@@ -4,18 +4,19 @@
 //! (FLIP) instead of jumping.
 
 use gpui::{
-    AnyElement, ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent,
+    AnyElement, App, ClickEvent, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent,
     ParentElement, Styled, Window, div, prelude::*, px,
 };
 
 use super::{
-    ContextTarget, DiscardSelected, RowKey, SelectNext, SelectPrev, SidebarView, ToggleInclude,
+    ContextTarget, DiscardSelected, RowKey, SelectAll, SelectNext, SelectPrev, SidebarView,
+    ToggleInclude,
 };
 use wackdepot_core::stage::ConflictSide;
 
 use crate::components::button::icon_button;
 use crate::components::mark::{Check, checkbox, status_mark};
-use crate::components::menu::{menu_row, menu_separator, popover};
+use crate::components::menu::{Popover, menu_row, menu_separator, popover};
 use crate::components::misc::{empty_state, rolling_count};
 use crate::components::seam::trail;
 use crate::icons::icon;
@@ -148,30 +149,127 @@ impl SidebarView {
         }
     }
 
+    /// Space: the whole selection goes one way — any included file means
+    /// all-out, all-excluded brings them all back in.
     fn toggle_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(Selection::File { path, bucket }) = self.model.read(cx).selection.clone() {
+        if self.model.read(cx).tab != crate::model::Tab::Changes || self.context.is_some() {
+            return;
+        }
+        let picked: Vec<(String, Bucket)> = {
+            let model = self.model.read(cx);
+            model
+                .selected_files
+                .iter()
+                .filter_map(|p| model.bucket_of(p).map(|b| (p.clone(), b)))
+                .collect()
+        };
+        if picked.is_empty() {
+            return;
+        }
+        if picked.len() == 1 {
+            let (path, bucket) = picked.into_iter().next().expect("len checked");
             self.model
                 .update(cx, |m, cx| m.toggle_include(path, bucket, cx));
+            return;
         }
+        let (unconflicted, conflicted): (Vec<_>, Vec<_>) = picked
+            .into_iter()
+            .partition(|(_, b)| *b != Bucket::Conflicted);
+        let excluded = self.model.read(cx).excluded.clone();
+        let include =
+            !unconflicted.is_empty() && unconflicted.iter().all(|(p, _)| excluded.contains(p));
+        self.model.update(cx, |m, cx| {
+            if !unconflicted.is_empty() {
+                m.set_paths_included(
+                    &unconflicted
+                        .iter()
+                        .map(|(p, _)| p.clone())
+                        .collect::<Vec<_>>(),
+                    include,
+                    cx,
+                );
+            }
+            if !conflicted.is_empty() {
+                m.mark_resolved(conflicted.into_iter().map(|(p, _)| p).collect(), cx);
+            }
+        });
     }
 
+    /// Ask to discard `path` — and every selected row when `path` is part
+    /// of a multi-selection (hover pill, context menu, ⌘⌫ all route here).
     pub(super) fn ask_discard(&mut self, path: String, bucket: Bucket, cx: &mut Context<Self>) {
-        let action = if bucket == Bucket::Untracked {
-            ConfirmAction::TrashFile { path }
+        let mut tracked: Vec<String>;
+        let mut untracked: Vec<String>;
+        {
+            let model = self.model.read(cx);
+            if model.selected_files.contains(&path) && model.selected_files.len() > 1 {
+                tracked = Vec::new();
+                untracked = Vec::new();
+                for p in &model.selected_files {
+                    match model.bucket_of(p) {
+                        // Conflicted rows can't be restored — they sit out.
+                        Some(Bucket::Conflicted) | None => {}
+                        Some(Bucket::Untracked) => untracked.push(p.clone()),
+                        _ => tracked.push(p.clone()),
+                    }
+                }
+            } else {
+                tracked = Vec::new();
+                untracked = Vec::new();
+                if bucket == Bucket::Untracked {
+                    untracked.push(path.clone());
+                } else {
+                    tracked.push(path.clone());
+                }
+            }
+        }
+        if tracked.is_empty() && untracked.is_empty() {
+            // Every picked row is conflicted — nothing here can go.
+            return;
+        }
+        let action = if tracked.len() + untracked.len() == 1 {
+            if let Some(p) = untracked.into_iter().next() {
+                ConfirmAction::TrashFile { path: p }
+            } else {
+                // Any tracked row — even one only staged — drops everything.
+                ConfirmAction::DiscardFile {
+                    path: tracked.into_iter().next().expect("len checked"),
+                }
+            }
         } else {
-            // Any tracked row — even one only staged — drops everything.
-            ConfirmAction::DiscardFile { path }
+            ConfirmAction::DiscardFiles { tracked, untracked }
         };
         self.overlays
             .update(cx, |o, cx| o.confirm(action, None, cx));
     }
 
+    /// ⌘⌫: discard the current file selection (conflicted rows can't go).
     fn discard_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(Selection::File { path, bucket }) = self.model.read(cx).selection.clone()
-            && bucket != Bucket::Conflicted
-        {
+        if self.model.read(cx).tab != crate::model::Tab::Changes || self.context.is_some() {
+            return;
+        }
+        let target = {
+            let model = self.model.read(cx);
+            model.selected_files.iter().find_map(|p| {
+                model
+                    .bucket_of(p)
+                    .filter(|b| *b != Bucket::Conflicted)
+                    .map(|b| (p.clone(), b))
+            })
+        };
+        if let Some((path, bucket)) = target {
             self.ask_discard(path, bucket, cx);
         }
+    }
+
+    /// ⌘A: every visible file row.
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        if self.model.read(cx).tab != crate::model::Tab::Changes || self.context.is_some() {
+            return;
+        }
+        let order = self.visible_files(cx);
+        self.model
+            .update(cx, |m, cx| m.select_all_files(&order, cx));
     }
 
     pub(super) fn changes_list(
@@ -182,7 +280,7 @@ impl SidebarView {
         let model = self.model.read(cx);
         let snap = model.snap.clone();
         let loaded = model.loaded;
-        let selection = model.selection.clone();
+        let selected_files = model.selected_files.clone();
 
         if loaded && snap.changed_count() == 0 {
             return div()
@@ -274,11 +372,7 @@ impl SidebarView {
                     self.group_row(*b, n, cx).into_any_element()
                 }
                 RowKey::File(path, b) => {
-                    let selected = selection
-                        == Some(Selection::File {
-                            path: path.clone(),
-                            bucket: *b,
-                        });
+                    let selected = selected_files.contains(path);
                     let change = if *b == Bucket::Conflicted {
                         snap.bucket(Bucket::Conflicted)
                             .iter()
@@ -328,6 +422,7 @@ impl SidebarView {
             }))
             .on_action(cx.listener(|this, _: &ToggleInclude, _, cx| this.toggle_selected(cx)))
             .on_action(cx.listener(|this, _: &DiscardSelected, _, cx| this.discard_selected(cx)))
+            .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -535,19 +630,32 @@ impl SidebarView {
                     cx.notify();
                 }
             }))
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                 this.focus_list(window, cx);
-                let sel = Selection::File {
-                    path: p3.clone(),
-                    bucket: b,
-                };
-                this.model.update(cx, |m, cx| m.select(Some(sel), cx));
+                let order = this.visible_files(cx);
+                this.model.update(cx, |m, cx| {
+                    m.click_file(p3.clone(), b, e.modifiers(), &order, cx)
+                });
             }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener({
                     let path = path.to_string();
                     move |this, e: &MouseDownEvent, _, cx| {
+                        // A right-click inside the selection keeps the
+                        // set (its menu acts on all); outside it picks
+                        // just this row, like Finder.
+                        if !this.model.read(cx).selected_files.contains(&path) {
+                            this.model.update(cx, |m, cx| {
+                                m.select(
+                                    Some(Selection::File {
+                                        path: path.clone(),
+                                        bucket: b,
+                                    }),
+                                    cx,
+                                )
+                            });
+                        }
                         this.context = Some((
                             e.position,
                             ContextTarget::File {
@@ -660,6 +768,12 @@ impl SidebarView {
         let m = self.model.clone();
         let pop = popover("context").width(240.).at(at).on_dismiss(dismiss);
         let pop = match target {
+            ContextTarget::File { path, bucket }
+                if self.model.read(cx).selected_files.len() > 1
+                    && self.model.read(cx).selected_files.contains(&path) =>
+            {
+                self.multi_file_menu(pop, path, bucket, close, cx)
+            }
             ContextTarget::File { path, bucket } => {
                 // The checkbox's word in a menu: conflicted files resolve,
                 // everything else flips its include flag.
@@ -812,4 +926,160 @@ impl SidebarView {
         };
         Some(pop.into_any_element())
     }
+
+    /// The right-click menu for a multi-file selection: the same acts the
+    /// single-row menu has, batched over every picked row.
+    fn multi_file_menu(
+        &mut self,
+        pop: Popover,
+        path: String,
+        bucket: Bucket,
+        close: impl Fn(&mut App) + Clone + 'static,
+        cx: &mut Context<Self>,
+    ) -> Popover {
+        let model = self.model.read(cx);
+        let files: Vec<(String, Bucket)> = model
+            .selected_files
+            .iter()
+            .filter_map(|p| model.bucket_of(p).map(|b| (p.clone(), b)))
+            .collect();
+        let n = files.len();
+        let conflicted: Vec<String> = files
+            .iter()
+            .filter(|(_, b)| *b == Bucket::Conflicted)
+            .map(|(p, _)| p.clone())
+            .collect();
+        let rest: Vec<String> = files
+            .iter()
+            .filter(|(_, b)| *b != Bucket::Conflicted)
+            .map(|(p, _)| p.clone())
+            .collect();
+        let untracked: Vec<String> = files
+            .iter()
+            .filter(|(_, b)| *b == Bucket::Untracked)
+            .map(|(p, _)| p.clone())
+            .collect();
+        let all_excluded = !rest.is_empty() && rest.iter().all(|p| model.excluded.contains(p));
+        let paths: Vec<String> = model.selected_files.iter().cloned().collect();
+        let m = self.model.clone();
+        let e = cx.entity();
+        let mut pop = pop;
+        if !conflicted.is_empty() {
+            let (m, c, resolve) = (m.clone(), close.clone(), conflicted.clone());
+            pop = pop.child(
+                menu_row(
+                    "ctx-resolve-all",
+                    if conflicted.len() == n {
+                        "Mark all resolved".to_string()
+                    } else {
+                        format!("Mark {} resolved", conflicted.len())
+                    },
+                )
+                .icon("check")
+                .on_click(move |_, _, cx| {
+                    m.update(cx, |m, cx| m.mark_resolved(resolve.clone(), cx));
+                    c(cx);
+                }),
+            );
+        }
+        if !rest.is_empty() {
+            let include = all_excluded;
+            let (m1, m2, m3) = (m.clone(), m.clone(), m.clone());
+            let (r1, r2) = (rest.clone(), rest.clone());
+            let (c1, c2, c3, c4, c5) = (
+                close.clone(),
+                close.clone(),
+                close.clone(),
+                close.clone(),
+                close.clone(),
+            );
+            pop = pop.child(
+                menu_row(
+                    "ctx-include",
+                    if include {
+                        format!("Include {} in commit", count_label(rest.len()))
+                    } else {
+                        format!("Exclude {} from commit", count_label(rest.len()))
+                    },
+                )
+                .icon(if include { "check" } else { "minus" })
+                .on_click(move |_, _, cx| {
+                    m1.update(cx, |m, cx| m.set_paths_included(&r1, include, cx));
+                    c1(cx);
+                }),
+            );
+            if !untracked.is_empty() {
+                pop = pop.child(
+                    menu_row(
+                        "ctx-ignore",
+                        format!("Ignore {}", count_label(untracked.len())),
+                    )
+                    .icon("eye-off")
+                    .on_click(move |_, _, cx| {
+                        m2.update(cx, |m, cx| m.ignore_paths(untracked.clone(), cx));
+                        c2(cx);
+                    }),
+                );
+            }
+            pop = pop
+                .child(menu_separator(cx))
+                .child(
+                    menu_row(
+                        "ctx-discard",
+                        format!("Discard {}…", count_label(rest.len())),
+                    )
+                    .icon("trash")
+                    .danger()
+                    .on_click(move |_, _, cx| {
+                        e.update(cx, |s, cx| s.ask_discard(path.clone(), bucket, cx));
+                        c3(cx);
+                    }),
+                )
+                .child(menu_separator(cx))
+                .child(
+                    menu_row("ctx-copy", format!("Copy {} paths", n))
+                        .icon("copy")
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                paths.join("\n"),
+                            ));
+                            c4(cx);
+                        }),
+                )
+                .child(
+                    menu_row("ctx-reveal", "Reveal in Finder")
+                        .icon("folder")
+                        .on_click(move |_, _, cx| {
+                            m3.update(cx, |m, cx| m.reveal_paths(&r2, cx));
+                            c5(cx);
+                        }),
+                );
+        } else {
+            // Only conflicted rows (or vanished ones) are picked.
+            let c = close.clone();
+            let copy = menu_row("ctx-copy", format!("Copy {} paths", paths.len()))
+                .icon("copy")
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(paths.join("\n")));
+                    c(cx);
+                });
+            if conflicted.is_empty() {
+                return pop.child(copy);
+            }
+            pop = pop.child(menu_separator(cx)).child(copy).child(
+                menu_row("ctx-reveal", "Reveal in Finder")
+                    .icon("folder")
+                    .on_click(move |_, _, cx| {
+                        m.update(cx, |m, cx| m.reveal_paths(&conflicted, cx));
+                        close(cx);
+                    }),
+            );
+        }
+        pop
+    }
+}
+
+/// `3 files`/`1 file` for multi-select menu labels.
+fn count_label(n: usize) -> String {
+    format!("{n} file{}", if n == 1 { "" } else { "s" })
 }
