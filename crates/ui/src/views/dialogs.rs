@@ -14,7 +14,7 @@ use wackdepot_core::license;
 use wackdepot_core::merge::{MergeMethod, MergePreview};
 use wackdepot_core::stage::ConflictSide;
 use wackdepot_core::status::FileChange;
-use wackdepot_core::sync::CreateOptions;
+use wackdepot_core::sync::{self, CreateOptions};
 
 use crate::app::overlays::Overlays;
 use crate::components::button::{button, icon_button};
@@ -347,7 +347,10 @@ impl NewRepoDialog {
             cx.subscribe(
                 input,
                 |this: &mut Self, _, e: &TextInputEvent, cx| match e {
-                    TextInputEvent::Changed => this.error = None,
+                    TextInputEvent::Changed => {
+                        this.error = None;
+                        cx.notify();
+                    }
                     TextInputEvent::Submit => this.submit(cx),
                 },
             )
@@ -444,7 +447,7 @@ impl NewRepoDialog {
     fn submit(&mut self, cx: &mut Context<Self>) {
         let name = self.name.read(cx).content().trim().to_string();
         let parent = self.parent.read(cx).content().trim().to_string();
-        if name.is_empty() || name.contains('/') {
+        if name.is_empty() || name.contains('/') || name == "." || name == ".." {
             self.error = Some("Give the repository a folder name (no slashes).".into());
             cx.notify();
             return;
@@ -458,7 +461,7 @@ impl NewRepoDialog {
             cx.notify();
             return;
         }
-        let path = parent.join(&name);
+        let path = sync::create_target(&parent, &name);
         if path.exists() {
             match std::fs::read_dir(&path).map(|mut d| d.next().is_some()) {
                 Ok(true) => {
@@ -500,11 +503,47 @@ impl NewRepoDialog {
                 && let Some(p) = paths.into_iter().next()
             {
                 let _ = this.update(cx, |this, cx| {
+                    // An empty picked folder is meant as the repo itself —
+                    // offer its name when the field is still blank so the
+                    // resolved path lands inside it, not one level deeper.
+                    let blank = this.name.read(cx).content().trim().is_empty();
+                    let picked_empty = std::fs::read_dir(&p)
+                        .map(|mut d| d.next().is_none())
+                        .unwrap_or(false);
+                    if blank
+                        && picked_empty
+                        && let Some(leaf) = p.file_name()
+                    {
+                        let leaf = leaf.to_string_lossy().into_owned();
+                        this.name.update(cx, |i, cx| i.set_content(leaf, cx));
+                    }
                     this.parent.update(cx, |i, cx| i.set_content(tilde(&p), cx))
                 });
             }
         })
         .detach();
+    }
+
+    /// "Creates ~/…" under the Inside field — the resolved target, so an
+    /// in-place create (empty same-named folder) can't surprise anyone.
+    fn create_preview(&self, cx: &App) -> Option<AnyElement> {
+        let name = self.name.read(cx).content().trim().to_string();
+        let inside = self.parent.read(cx).content().trim().to_string();
+        if name.is_empty() || inside.is_empty() {
+            return None;
+        }
+        let t = cx.theme().clone();
+        let path = tilde(&sync::create_target(&untilde(&inside), &name));
+        Some(
+            div()
+                .mt(px(-10.))
+                .px(px(1.))
+                .truncate()
+                .text_size(px(metrics::TEXT_META))
+                .text_color(t.text_dim)
+                .child(format!("Creates {path}"))
+                .into_any_element(),
+        )
     }
 }
 
@@ -568,6 +607,7 @@ impl Render for NewRepoDialog {
                 window,
                 cx,
             ))
+            .children(self.create_preview(cx))
             .child(readme)
             .child(self.option_row(Pick::Gitignore, "Git ignore", cx))
             .child(self.option_row(Pick::License, "License", cx))

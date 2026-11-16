@@ -342,6 +342,27 @@ pub fn name_from_url(url: &str) -> Option<String> {
     (!stem.is_empty() && stem != ".").then(|| stem.to_string())
 }
 
+/// The directory a new repository should be `git init`'d in: `inside`
+/// plus `name`, except when `inside` already *is* the intended folder —
+/// an empty (or missing) directory whose name matches `name` — in which
+/// case the repo initializes in place. Without the exception, picking an
+/// empty `foo/` and naming the repo `foo` produces `foo/foo`.
+pub fn create_target(inside: &Path, name: &str) -> PathBuf {
+    let usable = match fs::read_dir(inside) {
+        Ok(mut d) => d.next().is_none(),
+        // Missing dirs are usable; anything else (a file, unreadable) isn't.
+        Err(_) => !inside.exists(),
+    };
+    let same_name = inside
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().to_lowercase() == name.to_lowercase());
+    if usable && same_name {
+        inside.into()
+    } else {
+        inside.join(name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,6 +544,30 @@ mod tests {
         );
         assert_eq!(name_from_url("git@x:a/c.git/").as_deref(), Some("c"));
         assert_eq!(name_from_url("https://x/").as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn create_target_nests_unless_empty_same_named_folder() {
+        let scratch = tempfile::tempdir().unwrap();
+        let base = scratch.path();
+        // Ordinary case: the repo goes in a new folder inside `base`.
+        assert_eq!(create_target(base, "repo"), base.join("repo"));
+        // The user's complaint: an existing *empty* folder named like the
+        // repo is the repo, not its parent.
+        let empty = base.join("repo");
+        fs::create_dir(&empty).unwrap();
+        assert_eq!(create_target(&empty, "repo"), empty);
+        assert_eq!(create_target(&empty, "REPO"), empty); // case-insensitive FS
+        // An occupied same-named folder still nests — never init into
+        // someone's files.
+        fs::write(empty.join("keep.txt"), "x").unwrap();
+        assert_eq!(create_target(&empty, "repo"), empty.join("repo"));
+        // A different-named folder is a parent, empty or not.
+        let other = base.join("other");
+        fs::create_dir(&other).unwrap();
+        assert_eq!(create_target(&other, "repo"), other.join("repo"));
+        // A missing path named like the repo is the target itself.
+        assert_eq!(create_target(&base.join("new"), "new"), base.join("new"));
     }
 
     #[test]
