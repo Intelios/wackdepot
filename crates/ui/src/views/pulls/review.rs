@@ -808,7 +808,7 @@ impl PullWorkspace {
                                 .on_click(move |_, _, cx| cx.open_url(&format!("{url}/files"))),
                         ),
                 )
-                .child(div().flex_1().min_h_0().child(self.diff.clone()));
+                .child(div().flex_1().min_w_0().min_h_0().child(self.diff.clone()));
         }
         let mut content = div().flex_1().min_h_0().flex().flex_col();
         if !detail.files_complete {

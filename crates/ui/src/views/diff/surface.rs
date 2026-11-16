@@ -1,6 +1,7 @@
 //! Shared diff layout and semantic styling for working changes and hosted reviews.
-use crate::theme::Theme;
-use wackdepot_core::diff::{DiffFileStatus, DiffLineKind, FileDiff};
+use crate::theme::{ActiveTheme, Theme, metrics};
+use gpui::{App, Pixels, TextRun, Window, px};
+use wackdepot_core::diff::{DiffFileStatus, DiffLine, DiffLineKind, FileDiff};
 
 /// One row of the rendered diff.
 #[derive(Debug, Clone, Copy)]
@@ -120,4 +121,95 @@ pub(crate) fn build_rows(file: &FileDiff, split: bool) -> Vec<Row> {
         }
     }
     rows
+}
+
+/// How many lines per side get measured exactly — the rest are ruled out
+/// by a cheap estimate that can't under-report by much (see `Pool`).
+const WIDE_CANDIDATES: usize = 24;
+
+/// The widest code-cell text in a diff: unified width, and the two split
+/// cell widths. Lines never wrap, so this sets the horizontal scroll
+/// range — without it a minified file's single huge line is unseeable
+/// past the viewport edge.
+///
+/// Shaping every line costs too much on a large diff, so a byte-length
+/// estimate (tabs expand) nominates a handful of candidates per pool and
+/// only those get shaped. Byte length over-rates multi-byte characters
+/// and never under-rates anything except a tab, which its padding covers,
+/// so the true widest lines always survive nomination.
+pub(crate) fn code_widths(file: &FileDiff, window: &Window, cx: &App) -> (Pixels, Pixels, Pixels) {
+    let mut all = Pool::new();
+    let mut left = Pool::new();
+    let mut right = Pool::new();
+    for h in &file.hunks {
+        for l in &h.lines {
+            all.consider(l);
+            match l.kind {
+                // Split pairs context on both cells; removals land on the
+                // left and everything else on the right.
+                DiffLineKind::Context | DiffLineKind::Removed | DiffLineKind::Theirs => {
+                    left.consider(l)
+                }
+                _ => right.consider(l),
+            }
+        }
+    }
+    let t = cx.theme();
+    let font = gpui::font(t.mono.clone());
+    let size = px(metrics::TEXT_CODE);
+    let ts = window.text_system();
+    let measure = |l: &DiffLine| {
+        let text = super::text::expand_tabs(&l.text).0;
+        let run = TextRun {
+            len: text.len(),
+            font: font.clone(),
+            color: t.code_text,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        ts.layout_line(&text, size, &[run], None).width
+    };
+    (
+        all.widest(&measure),
+        left.widest(&measure),
+        right.widest(&measure),
+    )
+}
+
+/// The `WIDE_CANDIDATES` longest-estimated lines of one cell pool.
+struct Pool<'a> {
+    lines: Vec<(&'a DiffLine, usize)>,
+}
+
+impl<'a> Pool<'a> {
+    fn new() -> Self {
+        Self { lines: Vec::new() }
+    }
+
+    /// Keep `line` if its column estimate ranks in the top candidates.
+    /// The estimate is the byte length plus the columns tabs expand to —
+    /// multi-byte characters over-report, so genuinely wide lines can't
+    /// be squeezed out of nomination.
+    fn consider(&mut self, line: &'a DiffLine) {
+        let mut cols = line.text.len();
+        for (col, b) in line.text.bytes().enumerate() {
+            if b == b'\t' {
+                cols += super::text::TAB - col % super::text::TAB;
+            }
+        }
+        let i = self.lines.partition_point(|(_, est)| *est > cols);
+        if i < WIDE_CANDIDATES {
+            self.lines.insert(i, (line, cols));
+            self.lines.truncate(WIDE_CANDIDATES);
+        }
+    }
+
+    /// The measured width of the widest nominated line.
+    fn widest(&self, measure: &dyn Fn(&DiffLine) -> Pixels) -> Pixels {
+        self.lines
+            .iter()
+            .map(|(l, _)| measure(l))
+            .fold(px(0.), |a, w| a.max(w))
+    }
 }

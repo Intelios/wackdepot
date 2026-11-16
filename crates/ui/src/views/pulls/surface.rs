@@ -6,10 +6,11 @@ use crate::app::prefs;
 use crate::components::button::button;
 use crate::model::pulls::{PullEvent, PullRequestModel};
 use crate::theme::{ActiveTheme, Theme};
-use crate::views::diff::{Row, build_rows, row_tone, text::styled_line};
+use crate::views::diff::{Row, build_rows, code_widths, row_tone, text::styled_line};
 use gpui::{
-    AnyElement, Context, Entity, IntoElement, ListAlignment, ListState, MouseButton, ParentElement,
-    Render, Styled, StyledText, Window, div, list, prelude::*, px,
+    AnyElement, App, Context, Entity, IntoElement, ListAlignment, ListState, MouseButton,
+    ParentElement, Pixels, Render, ScrollHandle, Styled, StyledText, Window, div, list, point,
+    prelude::*, px,
 };
 use std::rc::Rc;
 use std::sync::Arc;
@@ -44,6 +45,14 @@ pub struct PullDiff {
     document: Option<Arc<Document>>,
     rows: Rc<Vec<Row>>,
     list: ListState,
+    /// Horizontal scroll for lines wider than the pane — diffs don't wrap.
+    hscroll: ScrollHandle,
+    /// Widest row's laid width — the list's fixed size; the h-scroll
+    /// range is this minus the viewport.
+    content_w: Pixels,
+    /// Re-measure `content_w` on the next render — text shaping needs a
+    /// `Window`.
+    width_dirty: bool,
     pub key: String,
     loading: bool,
     error: Option<String>,
@@ -58,6 +67,9 @@ impl PullDiff {
             document: None,
             rows: Rc::new(Vec::new()),
             list: ListState::new(0, ListAlignment::Top, px(500.)),
+            hscroll: ScrollHandle::new(),
+            content_w: px(0.),
+            width_dirty: true,
             key: String::new(),
             loading: false,
             error: None,
@@ -117,9 +129,24 @@ impl PullDiff {
                 let words=file.hunks.iter().map(words::hunk_word_ranges).collect();
                 Ok(Document {file,words,old,new,head,reviewable})
             }).await;
-            let _=this.update(cx,|this,cx|{if this.generation!=generation{return;}this.loading=false;match result{Ok(document)=>{this.rows=Rc::new(build_rows(&document.file,this.split));this.list.reset(this.rows.len());this.document=Some(Arc::new(document));},Err(error)=>this.error=Some(error)}cx.notify();});
+            let _=this.update(cx,|this,cx|{if this.generation!=generation{return;}this.loading=false;match result{Ok(document)=>{this.rows=Rc::new(build_rows(&document.file,this.split));this.list.reset(this.rows.len());this.document=Some(Arc::new(document));this.width_dirty=true;this.hscroll.set_offset(point(px(0.),px(0.)));},Err(error)=>this.error=Some(error)}cx.notify();});
         }).detach();
         cx.notify();
+    }
+    /// The h-scroll range: the widest code text plus the chrome beside
+    /// it — the two review gutters, the +/− column and the split
+    /// divider, with a little trailing pad. Runs in render because
+    /// measuring text needs the window's text system.
+    fn recalc_width(&mut self, window: &Window, cx: &App) {
+        self.width_dirty = false;
+        self.content_w = self.document.as_ref().map_or(px(0.), |doc| {
+            let (unified, left, right) = code_widths(&doc.file, window, cx);
+            if self.split {
+                px(88. + 1.) + left.max(right)
+            } else {
+                px(88. + 16. + 8.) + unified
+            }
+        });
     }
     fn gutter(
         &self,
@@ -254,6 +281,7 @@ impl PullDiff {
             Row::Hunk { hunk } => {
                 return div()
                     .h(px(32.))
+                    .w_full()
                     .px(px(12.))
                     .flex()
                     .items_center()
@@ -356,6 +384,7 @@ impl PullDiff {
             let id = thread.id.clone();
             let mut bubble = div()
                 .m(px(8.))
+                .max_w(px(720.))
                 .p(px(12.))
                 .rounded(px(10.))
                 .bg(t.surface)
@@ -416,14 +445,19 @@ impl PullDiff {
     }
 }
 impl Render for PullDiff {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let split = prefs::get(cx).diff_split;
         if self.split != split {
             self.split = split;
+            self.hscroll.set_offset(point(px(0.), px(0.)));
             if let Some(doc) = &self.document {
                 self.rows = Rc::new(build_rows(&doc.file, split));
                 self.list.reset(self.rows.len());
             }
+            self.width_dirty = true;
+        }
+        if self.width_dirty {
+            self.recalc_width(window, cx);
         }
         let t = cx.theme().clone();
         if let Some(error) = &self.error {
@@ -455,11 +489,27 @@ impl Render for PullDiff {
                 .child("This file has no text changes.")
                 .into_any_element();
         }
-        list(
-            self.list.clone(),
-            cx.processor(|this, ix, _, cx| this.row(ix, cx)),
-        )
-        .size_full()
-        .into_any_element()
+        // Same pattern as the working-diff card: a vertical list in a
+        // horizontally scrolling pane, wide enough for the longest line.
+        let mut scroll = div()
+            .size_full()
+            .id("pr-diff-scroll")
+            .track_scroll(&self.hscroll)
+            .overflow_x_scroll();
+        scroll.style().restrict_scroll_to_axis = Some(true);
+        scroll
+            .child(
+                list(
+                    self.list.clone(),
+                    cx.processor(|this, ix, _, cx| this.row(ix, cx)),
+                )
+                .h_full()
+                .w(self.content_w)
+                .min_w_full()
+                // Don't let flex shrink fold the wide list back to the
+                // viewport — that's the whole point of the scroll pane.
+                .flex_shrink_0(),
+            )
+            .into_any_element()
     }
 }

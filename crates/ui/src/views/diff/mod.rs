@@ -5,7 +5,7 @@
 
 mod surface;
 pub(crate) mod text;
-pub(crate) use surface::{Row, build_rows, row_tone};
+pub(crate) use surface::{Row, build_rows, code_widths, row_tone};
 
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Context, Entity, FocusHandle, FontWeight, IntoElement, KeyBinding,
-    ListAlignment, ListOffset, ListState, MouseButton, ObjectFit, ParentElement, Render,
+    ListAlignment, ListOffset, ListState, MouseButton, ObjectFit, ParentElement, Pixels, Render,
     RenderImage, ScrollHandle, Styled, StyledImage, StyledText, Window, div, img, list, point,
     prelude::*, px,
 };
@@ -68,6 +68,15 @@ pub struct DiffCard {
     /// Focus for the commit file strip.
     focus: FocusHandle,
     strip_scroll: ScrollHandle,
+    /// The diff well's horizontal scroll: lines don't wrap, so a long
+    /// line widens the content past the pane edge.
+    hscroll: ScrollHandle,
+    /// Widest row's laid width — the list's fixed size; the h-scroll
+    /// range is this minus the viewport.
+    content_w: Pixels,
+    /// Re-measure `content_w` on the next render — text shaping needs a
+    /// `Window`, which `rebuild` doesn't have.
+    width_dirty: bool,
     /// Lines picked for partial staging, as (hunk, line).
     sel: BTreeSet<(usize, usize)>,
     /// Dragging across the gutter: `Some(true)` adds lines, `Some(false)`
@@ -99,6 +108,8 @@ struct SavedDiff {
     rows: Rc<Vec<Row>>,
     list: ListState,
     strip_scroll: ScrollHandle,
+    hscroll: ScrollHandle,
+    content_w: Pixels,
     body_expanded: Option<String>,
 }
 
@@ -144,6 +155,9 @@ impl DiffCard {
             list: ListState::new(0, ListAlignment::Top, px(600.)),
             focus: cx.focus_handle(),
             strip_scroll: ScrollHandle::new(),
+            hscroll: ScrollHandle::new(),
+            content_w: px(0.),
+            width_dirty: true,
             sel: BTreeSet::new(),
             drag: None,
             body_expanded: None,
@@ -164,6 +178,8 @@ impl DiffCard {
                 rows: self.rows.clone(),
                 list: self.list.clone(),
                 strip_scroll: self.strip_scroll.clone(),
+                hscroll: self.hscroll.clone(),
+                content_w: self.content_w,
                 body_expanded: self.body_expanded.clone(),
             });
         }
@@ -178,6 +194,8 @@ impl DiffCard {
             self.rows = saved.rows;
             self.list = saved.list;
             self.strip_scroll = saved.strip_scroll;
+            self.hscroll = saved.hscroll;
+            self.content_w = saved.content_w;
             self.body_expanded = saved.body_expanded;
         }
         if let Some(old) = old {
@@ -245,12 +263,32 @@ impl DiffCard {
             Some(f) => build_rows(f, self.split),
             None => Vec::new(),
         };
+        self.width_dirty = true;
         if keep_scroll && rows.len() == self.rows.len() {
             self.rows = Rc::new(rows);
             return;
         }
         self.list.reset(rows.len());
+        self.hscroll.set_offset(point(px(0.), px(0.)));
         self.rows = Rc::new(rows);
+    }
+
+    /// The h-scroll range: the widest code text plus the chrome beside
+    /// it — two line-number gutters, the +/− column and a trailing pad
+    /// (split doubles the code cell around its divider). Runs in render
+    /// because measuring text needs the window's text system.
+    fn measure_width(&mut self, window: &Window, cx: &App) {
+        self.width_dirty = false;
+        let Some(file) = self.shown_file() else {
+            self.content_w = px(0.);
+            return;
+        };
+        let (unified, left, right) = code_widths(file, window, cx);
+        self.content_w = if self.split {
+            px(GUTTER_W * 2. + 1.) + left.max(right)
+        } else {
+            px(GUTTER_W * 2. + 18. + 8.) + unified
+        };
     }
 
     fn file(&self) -> Option<&FileDiff> {
@@ -1330,21 +1368,43 @@ impl DiffCard {
                 .child(empty_state("check", "No text changes").body(body))
                 .into_any_element();
         }
-        let entity = cx.entity();
         div()
             .size_full()
+            .flex()
             .rounded_br(px(metrics::RADIUS_CARD_INNER))
             .when(card_edge, |el| {
                 el.rounded_bl(px(metrics::RADIUS_CARD_INNER))
             })
             .bg(t.well)
-            .child(
-                list(self.list.clone(), move |ix, _window, cx| {
-                    entity.update(cx, |d, cx| d.render_row(ix, cx))
-                })
-                .size_full(),
-            )
+            .child(self.list_pane(cx))
             .into_any_element()
+    }
+
+    /// The code rows: a vertical `list` inside a horizontally scrolling
+    /// pane. The scroll pane is a stretched flex item — a percent width
+    /// would resolve to the content instead of the viewport here. The
+    /// list lays out at `content_w` (never narrower than the viewport),
+    /// so the longest line is reachable and every row — its background
+    /// included — spans the full scrolled width. Vertical scroll stays
+    /// the list's own; `restrict_scroll_to_axis` keeps a wheel's y-delta
+    /// from being hijacked into the x-axis.
+    fn list_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        let mut scroll = div()
+            .flex_1()
+            .min_w_0()
+            .id("diff-scroll")
+            .track_scroll(&self.hscroll)
+            .overflow_x_scroll();
+        scroll.style().restrict_scroll_to_axis = Some(true);
+        scroll.child(
+            list(self.list.clone(), move |ix, _window, cx| {
+                entity.update(cx, |d, cx| d.render_row(ix, cx))
+            })
+            .h_full()
+            .w(self.content_w)
+            .min_w_full(),
+        )
     }
 
     /// A conflicted file: the marker (or ours↔theirs) view led by a warning
@@ -1397,7 +1457,6 @@ impl DiffCard {
 
         let path = file.path().to_string();
         let m = self.model.clone();
-        let entity = cx.entity();
         let open = button("conflict-open", "Open in Editor")
             .small()
             .on_click(move |_, _, cx| m.update(cx, |m, cx| m.open_file_in_editor(&path, cx)));
@@ -1533,12 +1592,9 @@ impl DiffCard {
         } else {
             div()
                 .size_full()
-                .child(
-                    list(self.list.clone(), move |ix, _window, cx| {
-                        entity.update(cx, |d, cx| d.render_row(ix, cx))
-                    })
-                    .size_full(),
-                )
+                .flex()
+                .flex_col()
+                .child(self.list_pane(cx))
                 .into_any_element()
         };
 
@@ -1551,7 +1607,7 @@ impl DiffCard {
             .flex_col()
             .child(strip)
             .child(seam())
-            .child(div().flex_1().min_h_0().child(content))
+            .child(div().flex_1().min_w_0().min_h_0().child(content))
             .into_any_element()
     }
 
@@ -1636,6 +1692,9 @@ impl Render for DiffCard {
         for image in self.retired.drain(..) {
             cx.drop_image(image, Some(window));
         }
+        if self.width_dirty {
+            self.measure_width(window, cx);
+        }
         let t = cx.theme().clone();
         let model = self.model.read(cx);
         let loading = matches!(model.diff, DiffState::Loading);
@@ -1688,6 +1747,10 @@ impl Render for DiffCard {
                 card = card.child(seam()).child(
                     div()
                         .flex_1()
+                        // The flex item's automatic min-width is its
+                        // content's — an unwrappable line would blow the
+                        // whole card out past its edge.
+                        .min_w_0()
                         .min_h_0()
                         .child(self.body_pane(stale, true, cx)),
                 );

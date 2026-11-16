@@ -8,7 +8,7 @@ use wackdepot_syntax::{Kind, LineSpans};
 
 use crate::theme::Theme;
 
-const TAB: usize = 4;
+pub(crate) const TAB: usize = 4;
 
 pub fn kind_color(t: &Theme, k: Kind) -> Option<Hsla> {
     Some(match k {
@@ -24,7 +24,7 @@ pub fn kind_color(t: &Theme, k: Kind) -> Option<Hsla> {
 
 /// Expand tabs to spaces, returning the new text and a byte-offset map
 /// (old offset → new offset, one entry per old byte plus the end).
-fn expand_tabs(text: &str) -> (String, Vec<usize>) {
+pub(crate) fn expand_tabs(text: &str) -> (String, Vec<usize>) {
     let mut out = String::with_capacity(text.len());
     let mut map = Vec::with_capacity(text.len() + 1);
     let mut col = 0;
