@@ -943,7 +943,7 @@ impl DiffCard {
                             .gap(px(6.))
                             .text_size(px(12.))
                             .text_color(t.text_dim)
-                            .child(entry.author_name.clone())
+                            .child(entry.author_names())
                             .child("·")
                             .child(long_age(&entry.authored_at))
                             .child("·")

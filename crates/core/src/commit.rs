@@ -29,6 +29,19 @@ pub struct LogEntry {
     pub subject: String,
     /// Everything after the subject's blank line.
     pub body: String,
+    /// `(name, email)` pairs from trailing `Co-authored-by:` trailers.
+    pub co_authors: Vec<(String, String)>,
+}
+
+impl LogEntry {
+    /// Everyone credited on the commit: "Author, Co One, Co Two".
+    pub fn author_names(&self) -> String {
+        std::iter::once(self.author_name.as_str())
+            .chain(self.co_authors.iter().map(|(n, _)| n.as_str()))
+            .filter(|n| !n.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 /// Create a commit from the staged changes. `summary` is required; the
@@ -282,6 +295,7 @@ fn parse_log(text: &str) -> Vec<LogEntry> {
             if f.len() < 8 {
                 return None;
             }
+            let body = f[7].trim_end_matches('\n').to_string();
             Some(LogEntry {
                 sha: f[0].to_string(),
                 short: f[1].to_string(),
@@ -290,10 +304,64 @@ fn parse_log(text: &str) -> Vec<LogEntry> {
                 authored_at: f[4].to_string(),
                 parents: f[5].split_whitespace().map(str::to_string).collect(),
                 subject: f[6].to_string(),
-                body: f[7].trim_end_matches('\n').to_string(),
+                co_authors: co_authors(&body, f[3]),
+                body,
             })
         })
         .collect()
+}
+
+/// Co-authors from the body's trailing `Co-authored-by:` trailers.
+///
+/// GitHub Desktop's rule, not git's: the trailer block is the run of
+/// `Token: value` lines at the very end of the body — scanning backwards,
+/// the first blank or non-trailer line ends it. (git's own `%(trailers)`
+/// wants the *whole* last paragraph to be trailers, which loses a
+/// co-author hiding under a "🤖 Generated with Claude Code" line.)
+/// Values parse as `Name <email>`; a bare name still lists, and a
+/// trailer echoing the author's own email isn't repeated.
+fn co_authors(body: &str, author_email: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in body.trim_end().lines().rev() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            break;
+        };
+        if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            break;
+        }
+        if !key.eq_ignore_ascii_case("co-authored-by") {
+            continue;
+        }
+        let (name, email) = trailer_person(value.trim());
+        if name.is_empty() {
+            continue;
+        }
+        if !email.is_empty() && email.eq_ignore_ascii_case(author_email) {
+            continue;
+        }
+        let person = (name, email);
+        if !out.contains(&person) {
+            out.push(person);
+        }
+    }
+    out.reverse();
+    out
+}
+
+/// A trailer's `Name <email>` → `(name, email)`; a bare value becomes
+/// `(value, "")`.
+fn trailer_person(value: &str) -> (String, String) {
+    match value.split_once('<') {
+        Some((name, rest)) if rest.ends_with('>') => (
+            name.trim().to_string(),
+            rest[..rest.len() - 1].trim().to_string(),
+        ),
+        _ => (value.to_string(), String::new()),
+    }
 }
 
 #[cfg(test)]
@@ -506,6 +574,69 @@ mod tests {
         );
         // No upstream: every local commit counts as unpushed.
         assert!(unpushed_shas(dir.path()).unwrap().contains(&amended));
+    }
+
+    #[test]
+    fn log_lists_co_authors() {
+        let (dir, _g) = temp_repo();
+        write_file(dir.path(), "a.txt", "1\n");
+        crate::stage::stage_all(dir.path()).unwrap();
+        let opts = CommitOptions {
+            amend: false,
+            co_authors: vec![
+                ("Ada".into(), "ada@example.com".into()),
+                ("Claude".into(), "noreply@anthropic.com".into()),
+            ],
+        };
+        commit_with(dir.path(), "paired", "body", &opts).unwrap();
+
+        let e = &list_log(dir.path(), 10).unwrap()[0];
+        assert_eq!(
+            e.co_authors,
+            vec![
+                ("Ada".to_string(), "ada@example.com".to_string()),
+                ("Claude".to_string(), "noreply@anthropic.com".to_string()),
+            ]
+        );
+        assert_eq!(e.author_names(), "WackDepot Test, Ada, Claude");
+    }
+
+    #[test]
+    fn co_author_parsing() {
+        // A "Generated with …" line above the trailer doesn't hide it —
+        // GitHub Desktop shows these co-authors, git's %(trailers) can't.
+        let body = "body text\n\n🤖 Generated with Claude Code\nCo-Authored-By: Claude <noreply@anthropic.com>";
+        assert_eq!(
+            co_authors(body, "me@x"),
+            vec![("Claude".to_string(), "noreply@anthropic.com".to_string())]
+        );
+        // But a noise line *after* the trailer does end the block.
+        let body = "Co-Authored-By: Claude <c@x>\n🤖 Generated with Claude Code";
+        assert!(co_authors(body, "me@x").is_empty());
+        // So does a blank line, and trailers not in the last paragraph.
+        let body = "Co-Authored-By: A <a@x>\n\nnoise paragraph";
+        assert!(co_authors(body, "me@x").is_empty());
+
+        // Duplicates and a self-co-author collapse; other trailers pass by.
+        let body = "Signed-off-by: Me <me@x>\nCo-authored-by: A <a@x>\nCo-Authored-By: A <a@x>\nCo-authored-by: Me <me@x>";
+        assert_eq!(
+            co_authors(body, "me@x"),
+            vec![("A".to_string(), "a@x".to_string())]
+        );
+        // A bare name still credits someone rather than vanishing.
+        assert_eq!(
+            co_authors("Co-authored-by: Solo", "me@x"),
+            vec![("Solo".to_string(), String::new())]
+        );
+        // Several co-authors keep the trailer order (newest line last).
+        let body = "Co-authored-by: A <a@x>\nCo-authored-by: B <b@x>";
+        assert_eq!(
+            co_authors(body, "me@x"),
+            vec![
+                ("A".to_string(), "a@x".to_string()),
+                ("B".to_string(), "b@x".to_string())
+            ]
+        );
     }
 
     #[test]

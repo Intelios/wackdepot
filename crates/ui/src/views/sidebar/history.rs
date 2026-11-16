@@ -187,7 +187,7 @@ impl SidebarView {
             .text_size(px(11.5))
             .text_color(t.text_dim)
             .children(tag_els)
-            .child(div().truncate().child(c.author_name.clone()))
+            .child(div().truncate().child(c.author_names()))
             .child(div().text_color(t.text_faint).child("·"))
             .child(div().flex_none().child(short_age(&c.authored_at)))
             .child(

@@ -181,6 +181,7 @@ mod tests {
             parents: parents.iter().map(|p| p.to_string()).collect(),
             subject: String::new(),
             body: String::new(),
+            co_authors: Vec::new(),
         }
     }
 
