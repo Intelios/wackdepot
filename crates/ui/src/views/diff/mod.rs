@@ -12,19 +12,21 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Context, Entity, FocusHandle, FontWeight, IntoElement, KeyBinding,
-    ListAlignment, ListOffset, ListState, MouseButton, ObjectFit, ParentElement, Pixels, Render,
-    RenderImage, ScrollHandle, Styled, StyledImage, StyledText, Window, div, img, list, point,
-    prelude::*, px,
+    AnyElement, App, Context, CursorStyle, Entity, FocusHandle, FontWeight, IntoElement,
+    KeyBinding, ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ObjectFit, ParentElement, Pixels, Point, Render, RenderImage, ScrollHandle, Styled,
+    StyledImage, StyledText, Window, actions, div, img, list, point, prelude::*, px,
 };
 use wackdepot_core::diff::{DiffFileStatus, DiffLine, DiffLineKind, FileDiff};
 use wackdepot_core::stage::{ConflictSide, LineSel};
 
+use crate::app::actions::Dismiss;
 use crate::app::overlays::{Overlays, Pending};
 use crate::app::prefs;
 use crate::components::button::{Variant, button, icon_button};
 use crate::components::frost::frosted;
 use crate::components::mark::{accent_mark, status_mark};
+use crate::components::menu::{menu_row, menu_separator, popover};
 use crate::components::misc::{Tone, banner, empty_state};
 use crate::components::pill_track::pill_track;
 use crate::components::seam::seam;
@@ -50,12 +52,41 @@ const BODY_LINES: usize = 5;
 /// ~BODY_LINES of wrapped text — a single hard line can be long too.
 const BODY_CHARS: usize = 380;
 
-/// Arrows walk a commit's files while its file strip has focus.
+actions!(diff, [CopyLines, SelectAllLines]);
+
+/// Arrows walk a commit's files while its file strip has focus; the diff
+/// well binds line copying while it has focus.
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("up", SelectPrev, Some("FileStrip")),
         KeyBinding::new("down", SelectNext, Some("FileStrip")),
+        KeyBinding::new("cmd-c", CopyLines, Some("DiffBody")),
+        KeyBinding::new("cmd-a", SelectAllLines, Some("DiffBody")),
     ]);
+}
+
+/// Which half of a split row carries a selection — the old (left) or
+/// new (right) version of the line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Half {
+    Old,
+    New,
+}
+
+/// A line pick for copying: the anchor and head row indexes plus the
+/// split half it started in (`None` in unified view — the head can't
+/// stray to the other side). Lines are the unit, like GitHub Desktop.
+#[derive(Debug, Clone, Copy)]
+struct CopySel {
+    anchor: usize,
+    head: usize,
+    side: Option<Half>,
+}
+
+impl CopySel {
+    fn rows(&self) -> std::ops::RangeInclusive<usize> {
+        self.anchor.min(self.head)..=self.anchor.max(self.head)
+    }
 }
 
 pub struct DiffCard {
@@ -82,6 +113,14 @@ pub struct DiffCard {
     /// Dragging across the gutter: `Some(true)` adds lines, `Some(false)`
     /// removes them.
     drag: Option<bool>,
+    /// The diff well's focus — ⌘C/⌘A land here.
+    well_focus: FocusHandle,
+    /// Lines picked for copying (drag or ⌘A), in row indexes.
+    copy_sel: Option<CopySel>,
+    /// A left-drag over code is extending `copy_sel`.
+    copy_drag: bool,
+    /// Where a right-click menu is open in the well.
+    context: Option<Point<Pixels>>,
     /// SHA of the commit whose body is expanded past its clamp.
     body_expanded: Option<String>,
     /// A conflicted file shows its marker view or the ours↔theirs patch.
@@ -160,6 +199,10 @@ impl DiffCard {
             width_dirty: true,
             sel: BTreeSet::new(),
             drag: None,
+            well_focus: cx.focus_handle(),
+            copy_sel: None,
+            copy_drag: false,
+            context: None,
             body_expanded: None,
             conflict_view: ConflictView::Markers,
             tab,
@@ -186,6 +229,9 @@ impl DiffCard {
         self.tab = tab;
         self.sel.clear();
         self.drag = None;
+        self.copy_sel = None;
+        self.copy_drag = false;
+        self.context = None;
         let old = self.doc.take();
         if tab.index() < 2
             && let Some(saved) = self.remembered[tab.index()].take()
@@ -263,6 +309,9 @@ impl DiffCard {
             Some(f) => build_rows(f, self.split),
             None => Vec::new(),
         };
+        // Row indexes may shift — the copy pick and menu can't survive.
+        self.copy_sel = None;
+        self.context = None;
         self.width_dirty = true;
         if keep_scroll && rows.len() == self.rows.len() {
             self.rows = Rc::new(rows);
@@ -445,6 +494,321 @@ impl DiffCard {
         }
     }
 
+    // ── Line copying ───────────────────────────────────────────────────
+
+    /// A row's fixed height: a hunk band or one line of code. Knowing it
+    /// exactly lets hit-tests skip the list's own measurement tree.
+    fn row_height(row: &Row) -> Pixels {
+        match row {
+            Row::Hunk { .. } => px(HUNK_H),
+            _ => px(CODE_H),
+        }
+    }
+
+    /// The row's top edge in list-content coordinates.
+    fn row_top(&self, ix: usize) -> Pixels {
+        self.rows
+            .iter()
+            .take(ix)
+            .fold(px(0.), |a, r| a + Self::row_height(r))
+    }
+
+    /// How far the list is scrolled, in content pixels.
+    fn scroll_px(&self) -> Pixels {
+        let top = self.list.logical_scroll_top();
+        self.row_top(top.item_ix) + top.offset_in_item
+    }
+
+    /// The row under a window-space y (clamped to the list's ends).
+    fn row_at(&self, y: Pixels) -> usize {
+        if self.rows.is_empty() {
+            return 0;
+        }
+        let content_y = y - self.list.viewport_bounds().top() + self.scroll_px();
+        let mut at = px(0.);
+        let mut ix = 0;
+        for (i, r) in self.rows.iter().enumerate() {
+            if content_y < at + Self::row_height(r) {
+                ix = i;
+                break;
+            }
+            at += Self::row_height(r);
+            ix = i;
+        }
+        ix
+    }
+
+    /// The copy cell under a window point — only over the code area, so
+    /// gutters, the sigil column and hunk bands don't start a selection
+    /// (they stage, scroll and clear instead).
+    fn cell_at(&self, pos: Point<Pixels>) -> Option<(usize, Option<Half>)> {
+        let vb = self.list.viewport_bounds();
+        let ix = self.row_at(pos.y);
+        let x = pos.x - vb.left();
+        match *self.rows.get(ix)? {
+            Row::Line { .. } => (x >= px(GUTTER_W * 2.)).then_some((ix, None)),
+            Row::Pair { left, right, .. } => {
+                let w = self.content_w.max(vb.size.width);
+                let half_w = (w - px(1.)) / 2.;
+                let half = if x <= half_w { Half::Old } else { Half::New };
+                let cell_x = if half == Half::Old {
+                    x
+                } else {
+                    x - half_w - px(1.)
+                };
+                if cell_x < px(GUTTER_W) {
+                    return None;
+                }
+                // An empty half snaps to the populated cell — a click on
+                // the dead side still wants the row's content.
+                let populated = match (left.is_some(), right.is_some()) {
+                    (true, false) => Half::Old,
+                    (false, true) => Half::New,
+                    _ => half,
+                };
+                Some((ix, Some(populated)))
+            }
+            Row::Hunk { .. } => None,
+        }
+    }
+
+    /// The file line a copy cell holds, if its half is populated.
+    fn cell_line(&self, ix: usize, side: Option<Half>) -> Option<(usize, usize)> {
+        match *self.rows.get(ix)? {
+            Row::Line { hunk, line } => Some((hunk, line)),
+            Row::Pair {
+                hunk, left, right, ..
+            } => match side {
+                Some(Half::Old) => left.map(|l| (hunk, l)),
+                Some(Half::New) | None => right.or(left).map(|l| (hunk, l)),
+            },
+            Row::Hunk { .. } => None,
+        }
+    }
+
+    /// Whether row `ix`'s `half` cell is inside the copy selection.
+    fn row_selected(&self, ix: usize, half: Option<Half>) -> bool {
+        let Some(sel) = self.copy_sel else {
+            return false;
+        };
+        if !sel.rows().contains(&ix) {
+            return false;
+        }
+        match self.rows.get(ix) {
+            Some(Row::Line { .. }) => true,
+            Some(Row::Pair { .. }) => sel.side == half && self.cell_line(ix, sel.side).is_some(),
+            _ => false,
+        }
+    }
+
+    /// The selection's file text: raw lines (no +/- sigils), hunk bands
+    /// and `\ No newline` notices skipped.
+    fn copy_text(&self) -> String {
+        let Some(sel) = self.copy_sel else {
+            return String::new();
+        };
+        let mut out = String::new();
+        for ix in sel.rows() {
+            let Some((hunk, line)) = self.cell_line(ix, sel.side) else {
+                continue;
+            };
+            if let Some(l) = self.line(hunk, line)
+                && l.kind != DiffLineKind::NoNewline
+            {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&l.text);
+            }
+        }
+        out
+    }
+
+    fn copy_lines(&mut self, _: &CopyLines, _: &mut Window, cx: &mut Context<Self>) {
+        let text = self.copy_text();
+        if !text.is_empty() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        }
+    }
+
+    /// Every code row, end to end — new-side cells in split view when
+    /// any exist (the file's current state), else the old.
+    fn select_all_lines(&mut self, cx: &mut Context<Self>) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let has_pairs = self.rows.iter().any(|r| matches!(r, Row::Pair { .. }));
+        let side = if !has_pairs {
+            None
+        } else {
+            let new = self
+                .rows
+                .iter()
+                .any(|r| matches!(r, Row::Pair { right: Some(_), .. }));
+            Some(if new { Half::New } else { Half::Old })
+        };
+        self.copy_sel = Some(CopySel {
+            anchor: 0,
+            head: self.rows.len() - 1,
+            side,
+        });
+        cx.notify();
+    }
+
+    fn select_all_lines_action(
+        &mut self,
+        _: &SelectAllLines,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_all_lines(cx);
+    }
+
+    /// Escape while the well is focused: drop the menu, then the
+    /// selection, else let the workspace handle it as usual.
+    fn dismiss_well(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
+        if self.context.is_some() {
+            self.context = None;
+            cx.notify();
+        } else if self.copy_sel.is_some() {
+            self.copy_sel = None;
+            cx.notify();
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn well_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.well_focus.focus(window, cx);
+        if let Some((ix, half)) = self.cell_at(event.position) {
+            self.copy_sel = Some(CopySel {
+                anchor: ix,
+                head: ix,
+                side: half,
+            });
+            self.copy_drag = true;
+        } else {
+            self.copy_sel = None;
+        }
+        cx.notify();
+    }
+
+    fn well_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.copy_drag || event.pressed_button != Some(MouseButton::Left) {
+            return;
+        }
+        // Edge auto-scroll: holding the drag near the lip keeps the pick
+        // growing. Wheel scrolling mid-drag works the same way — the head
+        // is re-derived from the pointer after the scroll lands.
+        let vb = self.list.viewport_bounds();
+        let d = if event.position.y < vb.top() + px(24.) {
+            -px(16.)
+        } else if event.position.y > vb.bottom() - px(24.) {
+            px(16.)
+        } else {
+            px(0.)
+        };
+        if d != px(0.) {
+            self.list.scroll_by(d);
+        }
+        let ix = self.row_at(event.position.y);
+        if let Some(sel) = self.copy_sel.as_mut() {
+            sel.head = ix;
+        }
+        cx.notify();
+    }
+
+    /// Right-click in the well: over the pick it stays; over another line
+    /// the pick moves to it (the menu acts on it); elsewhere the pick
+    /// clears and no menu shows.
+    fn well_mouse_down_right(
+        &mut self,
+        event: &MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.cell_at(event.position) {
+            Some((ix, half)) => {
+                if !self.row_selected(ix, half) {
+                    self.copy_sel = Some(CopySel {
+                        anchor: ix,
+                        head: ix,
+                        side: half,
+                    });
+                }
+                self.context = Some(event.position);
+            }
+            None => {
+                self.copy_sel = None;
+                self.context = None;
+            }
+        }
+        cx.notify();
+    }
+
+    /// The well's right-click menu: copy what the pick covers.
+    fn context_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let at = self.context?;
+        let lines = self.copy_text().lines().count();
+        let entity = cx.entity();
+        let pop = popover("diff-context")
+            .width(210.)
+            .at(at)
+            .on_dismiss({
+                let entity = entity.clone();
+                move |_, cx| {
+                    entity.update(cx, |d, cx| {
+                        d.context = None;
+                        cx.notify();
+                    })
+                }
+            })
+            .child(
+                menu_row(
+                    "ctx-copy",
+                    if lines > 1 {
+                        format!("Copy {lines} lines")
+                    } else {
+                        "Copy line".to_string()
+                    },
+                )
+                .icon("copy")
+                .disabled(lines == 0)
+                .on_click(move |_, _, cx| {
+                    entity.update(cx, |d, cx| {
+                        d.copy_to_clipboard(cx);
+                        d.context = None;
+                        cx.notify();
+                    })
+                }),
+            )
+            .child(menu_separator(cx))
+            .child(menu_row("ctx-all", "Select all lines").on_click({
+                let entity = cx.entity();
+                move |_, _, cx| {
+                    entity.update(cx, |d, cx| {
+                        d.select_all_lines(cx);
+                        d.context = None;
+                        cx.notify();
+                    })
+                }
+            }));
+        Some(pop.into_any_element())
+    }
+
+    /// `copy_lines` without the action — the menu calls the same path.
+    fn copy_to_clipboard(&mut self, cx: &mut Context<Self>) {
+        let text = self.copy_text();
+        if !text.is_empty() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        }
+    }
+
     // ── Rows ───────────────────────────────────────────────────────────
 
     fn render_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -453,8 +817,8 @@ impl DiffCard {
         };
         match row {
             Row::Hunk { hunk } => self.hunk_row(hunk, cx),
-            Row::Line { hunk, line } => self.unified_row(hunk, line, cx),
-            Row::Pair { hunk, left, right } => self.pair_row(hunk, left, right, cx),
+            Row::Line { hunk, line } => self.unified_row(hunk, line, ix, cx),
+            Row::Pair { hunk, left, right } => self.pair_row(hunk, left, right, ix, cx),
         }
     }
 
@@ -600,7 +964,14 @@ impl DiffCard {
         g
     }
 
-    fn code(&self, l: &DiffLine, hunk: usize, line: usize, t: &Theme) -> impl IntoElement {
+    fn code(
+        &self,
+        l: &DiffLine,
+        hunk: usize,
+        line: usize,
+        selected: bool,
+        t: &Theme,
+    ) -> impl IntoElement {
         let doc = self.doc.as_ref();
         let sides = match self.conflict_view {
             ConflictView::Sides => doc.and_then(|d| d.sides.as_ref()),
@@ -625,8 +996,11 @@ impl DiffCard {
         div()
             .flex_1()
             .min_w_0()
+            .h_full()
             .overflow_hidden()
             .whitespace_nowrap()
+            .cursor(CursorStyle::IBeam)
+            .when(selected, |el| el.bg(t.selected_fill()))
             .text_color(match l.kind {
                 DiffLineKind::NoNewline => t.text_faint,
                 DiffLineKind::Marker => t.sem.warning,
@@ -635,12 +1009,19 @@ impl DiffCard {
             .child(StyledText::new(shown).with_highlights(hl))
     }
 
-    fn unified_row(&mut self, hunk: usize, line: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn unified_row(
+        &mut self,
+        hunk: usize,
+        line: usize,
+        ix: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let t = cx.theme().clone();
         let Some(l) = self.line(hunk, line).cloned() else {
             return div().into_any_element();
         };
         let picked = self.sel.contains(&(hunk, line));
+        let copy_selected = self.row_selected(ix, None);
         let (bg, edge, sigil) = row_tone(&t, l.kind);
         let bg = if picked {
             bg.map(|b| b.opacity((b.a * 2.2).min(0.5)))
@@ -661,11 +1042,13 @@ impl DiffCard {
             .child(
                 div()
                     .w(px(18.))
+                    .h_full()
                     .flex_none()
+                    .when(copy_selected, |el| el.bg(t.selected_fill()))
                     .text_color(edge.unwrap_or(t.text_faint))
                     .child(sigil),
             )
-            .child(self.code(&l, hunk, line, &t));
+            .child(self.code(&l, hunk, line, copy_selected, &t));
         if let Some(bg) = bg {
             row = row.bg(bg);
         }
@@ -688,6 +1071,7 @@ impl DiffCard {
         hunk: usize,
         left: Option<usize>,
         right: Option<usize>,
+        ix: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let t = cx.theme().clone();
@@ -704,6 +1088,8 @@ impl DiffCard {
                 return div().flex_1().into_any_element();
             };
             let picked = self.sel.contains(&(hunk, li));
+            let copy_selected =
+                self.row_selected(ix, Some(if old_side { Half::Old } else { Half::New }));
             let (bg, edge, _) = row_tone(&t, l.kind);
             let n = if old_side { l.old_lineno } else { l.new_lineno };
             let mut h = div()
@@ -721,7 +1107,7 @@ impl DiffCard {
                     (if old_side { "sl" } else { "sr" }, key),
                     cx,
                 ))
-                .child(self.code(&l, hunk, li, &t));
+                .child(self.code(&l, hunk, li, copy_selected, &t));
             if let Some(bg) = bg {
                 h = h.bg(if picked {
                     bg.opacity((bg.a * 2.2).min(0.5))
@@ -1394,8 +1780,16 @@ impl DiffCard {
             .flex_1()
             .min_w_0()
             .id("diff-scroll")
+            .key_context("DiffBody")
+            .track_focus(&self.well_focus)
             .track_scroll(&self.hscroll)
-            .overflow_x_scroll();
+            .overflow_x_scroll()
+            .on_action(cx.listener(Self::copy_lines))
+            .on_action(cx.listener(Self::select_all_lines_action))
+            .on_action(cx.listener(Self::dismiss_well))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::well_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::well_mouse_down_right))
+            .on_mouse_move(cx.listener(Self::well_mouse_move));
         scroll.style().restrict_scroll_to_axis = Some(true);
         scroll.child(
             list(self.list.clone(), move |ix, _window, cx| {
@@ -1707,6 +2101,7 @@ impl Render for DiffCard {
             MouseButton::Left,
             cx.listener(|d, _, _, cx| {
                 d.drag = None;
+                d.copy_drag = false;
                 cx.notify();
             }),
         );
@@ -1797,6 +2192,9 @@ impl Render for DiffCard {
         }
         if !stale {
             card = card.children(self.pick_pill(cx));
+        }
+        if let Some(menu) = self.context_menu(cx) {
+            card = card.child(menu);
         }
         card.into_any_element()
     }
