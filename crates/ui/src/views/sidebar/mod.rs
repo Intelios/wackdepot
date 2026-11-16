@@ -84,6 +84,11 @@ pub struct SidebarView {
     /// The first layout for this repo has happened (later rows animate in).
     seen: bool,
     context: Option<(Point<Pixels>, ContextTarget)>,
+    /// The avatar stack the pointer is over — `Some(id(sha))` expands it.
+    ava_hot: Option<u64>,
+    /// Per-commit expand/collapse tween for avatar stacks (`Motion` can't
+    /// reach rows — they build during uniform_list layout).
+    ava_exp: HashMap<u64, crate::components::avatars::StackExpand>,
 }
 
 impl SidebarView {
@@ -101,6 +106,8 @@ impl SidebarView {
                 this.seen = false;
                 this.context = None;
                 this.hot = None;
+                this.ava_hot = None;
+                this.ava_exp.clear();
                 cx.notify();
             }
             RepoEvent::Snapshot | RepoEvent::Selection | RepoEvent::Busy => cx.notify(),
@@ -121,6 +128,8 @@ impl SidebarView {
             hot: None,
             seen: false,
             context: None,
+            ava_hot: None,
+            ava_exp: HashMap::new(),
         }
     }
 

@@ -34,6 +34,7 @@ pub fn run() {
         .run(|cx: &mut App| {
             prefs::init(cx);
             crate::github::init(cx);
+            crate::avatar_cache::init(cx);
             let input = prefs::theme_input(prefs::get(cx));
             theme::init(cx, &input);
             actions::register(cx);

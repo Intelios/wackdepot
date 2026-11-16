@@ -3,6 +3,7 @@
 //! motion systems they're drawn with.
 
 pub mod app;
+pub mod avatar_cache;
 pub mod components;
 pub mod github;
 pub mod icons;

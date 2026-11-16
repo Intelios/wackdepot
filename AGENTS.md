@@ -18,13 +18,15 @@ WackDepot is a native macOS Git GUI — a GitHub-Desktop-class app rebuilt in Ru
 
 ## Map
 
+- **`crates/github`** (`wackdepot-github`): GitHub.com integration — REST/GraphQL client (ETag cache, rate-limit backoff, token refresh), OAuth + Keychain session, PR/branch/blob types, and `avatars` (Desktop-style `u/e?email=` avatar URL + fetch).
 - **`crates/core`** (`wackdepot-core`): all git logic — subprocess runner (with streaming progress), porcelain-v2 status (+ in-progress merge/rebase/cherry-pick/revert, line stats), unified-diff parsing + hunk and line-level patch building, `git apply` staging/discard, conflict resolution (ours/theirs/deletion checkouts, ours↔theirs stage diff), commit (amend, co-authors), revert/cherry-pick, reset (soft/mixed/hard — branch rewinds only touch unpushed history), log + graph lanes, branches/tags, fetch/pull/push/clone, stash (by sha), word-level diff, file versions, global identity, `.gitignore` (vendored github/gitignore templates in `gitignore/`, indexed by `build.rs`; pattern escape + append), `LICENSE` (vendored choosealicense.com texts in `licenses/` — Desktop's 13-license picker set — indexed by `build.rs`, token fill + write), new-repo scaffolding (README/.git/description/.gitattributes + "Initial commit"). Pure and testable; no gpui.
 - **`crates/syntax`** (`wackdepot-syntax`): syntect + bat's syntax set (two-face), scopes reduced to six code kinds, with size/time budgets.
 - **`crates/ui`** (`wackdepot-ui`): the gpui app.
   - `app/` — `run()`, `Workspace` (root view: routing, backdrop, column resizer, actions), `actions.rs` (actions, keys, menus), `backdrop.rs` (Liquid Glass / blur / solid, opaque while unfocused), `overlays.rs` (dialogs, toasts), `prefs.rs` (settings global), `window.rs`.
+  - `avatar_cache.rs` — `AvatarStore`, the app-global gpui `ImageCache` for avatar URLs (fetch+decode off-thread, 5-min failure stand-down, bounded eviction).
   - `model/` — `RepoModel` (snapshot, keyed selection, diff loading, serial op lane, epoch-guarded refresh, progress) and `ops.rs` (every git action).
   - `views/` — `titlebar.rs` (repo/branch pickers, sync pill, menus), `sidebar/` (Changes list, composer, History + graph), `diff/` (the diff card), `settings.rs`, `welcome.rs`, `dialogs.rs`.
-  - `components/` — pills/buttons, marks, pill track, menus/popovers, text input (single/multi-line), seams, spinner, slider, mascot, misc.
+  - `components/` — pills/buttons, marks, pill track, menus/popovers, text input (single/multi-line), seams, spinner, slider, mascot, misc, avatars (the overlapping stack on History rows and the commit header, `StackExpand` per-stack hover tween, name+email tooltips).
   - `theme/` — WackCode's OKLCH token engine (golden-tested), presets, fixed semantic colours, metrics, bundled Inter. The only place colour literals live (`lint.rs` enforces it).
   - `motion/` — easings, springs, the per-view `Motion` store, presence.
   - `native/` — NSGlassEffectView, NSApp appearance, accessibility settings.

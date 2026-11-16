@@ -2,6 +2,7 @@
 //! marks, tracks, sheets, menus. Self-animating ones keep their motion in
 //! gpui keyed state.
 
+pub mod avatars;
 pub mod button;
 pub mod drag;
 pub mod frost;

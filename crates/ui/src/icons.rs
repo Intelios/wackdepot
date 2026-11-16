@@ -157,6 +157,10 @@ static ICONS: &[(&str, &str)] = &[
         r#"<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M19 8v6M16 11h6"/>"#,
     ),
     (
+        "user",
+        r#"<circle cx="12" cy="8" r="3.5"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/>"#,
+    ),
+    (
         "amend",
         r#"<path d="M4 20l1-4L14.5 6.5a2.1 2.1 0 0 1 3 3L8 19z"/><path d="M15 20h5"/>"#,
     ),

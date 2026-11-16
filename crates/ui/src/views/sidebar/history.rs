@@ -1,6 +1,8 @@
 //! History: commits newest-first with compact graph lanes, unpushed marks,
 //! and a context menu for revert, cherry-pick, reset, branch, tag and copy.
 
+use std::rc::Rc;
+
 use gpui::{
     AnyElement, App, Context, FontWeight, IntoElement, MouseButton, MouseDownEvent, ParentElement,
     Styled, Window, div, prelude::*, px, uniform_list,
@@ -90,7 +92,7 @@ impl SidebarView {
             .into_any_element()
     }
 
-    fn commit_row(&mut self, i: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn commit_row(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let model = self.model.read(cx);
         let snap = model.snap.clone();
@@ -107,6 +109,20 @@ impl SidebarView {
         let sha = c.sha.clone();
         let sha2 = c.sha.clone();
 
+        let select: crate::components::avatars::Click =
+            Rc::new(cx.listener(move |this, _, window, cx| {
+                this.focus_list(window, cx);
+                let sel = Selection::Commit {
+                    sha: sha.clone(),
+                    file: None,
+                };
+                this.model.update(cx, |m, cx| m.select(Some(sel), cx));
+            }));
+        let context_menu: crate::components::avatars::RightClick =
+            Rc::new(cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                this.context = Some((e.position, ContextTarget::Commit { sha: sha2.clone() }));
+                cx.notify();
+            }));
         let mut row = div()
             .id(("commit", i))
             .h(px(ROW_H))
@@ -117,21 +133,14 @@ impl SidebarView {
             .pr(px(10.))
             .rounded(px(14.))
             .cursor_pointer()
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.focus_list(window, cx);
-                let sel = Selection::Commit {
-                    sha: sha.clone(),
-                    file: None,
-                };
-                this.model.update(cx, |m, cx| m.select(Some(sel), cx));
-            }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
-                    this.context = Some((e.position, ContextTarget::Commit { sha: sha2.clone() }));
-                    cx.notify();
-                }),
-            );
+            .on_click({
+                let select = select.clone();
+                move |e, window, cx| select(e, window, cx)
+            })
+            .on_mouse_down(MouseButton::Right, {
+                let context_menu = context_menu.clone();
+                move |e, window, cx| context_menu(e, window, cx)
+            });
         if let Some(g) = graph {
             let w = gutter_width(lanes);
             row = row.child(div().h_full().w(px(w)).flex_none().child(paint_row(
@@ -145,6 +154,36 @@ impl SidebarView {
             )));
         } else {
             row = row.pl(px(10.));
+        }
+        let people = crate::components::avatars::participants(&c);
+        if !people.is_empty() {
+            let key = crate::motion::id(&c.sha);
+            let expand =
+                self.ava_exp
+                    .entry(key)
+                    .or_default()
+                    .sample(self.ava_hot == Some(key), window, cx);
+            let avatars = crate::avatar_cache::store(cx);
+            row = row.child(div().flex_none().ml(px(6.)).child(
+                crate::components::avatars::avatar_stack(
+                    &people,
+                    key,
+                    16.0,
+                    t.sidebar,
+                    expand,
+                    &t,
+                    &avatars,
+                    cx.listener(move |this, hot: &bool, _, cx| {
+                        let next = if *hot { Some(key) } else { None };
+                        if this.ava_hot != next {
+                            this.ava_hot = next;
+                            cx.notify();
+                        }
+                    }),
+                    Some(select.clone()),
+                    Some(context_menu.clone()),
+                ),
+            ));
         }
         // Release markers: every tag pointing at this commit, capped at
         // two chips — the rest collapse into `+n`.

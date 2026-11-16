@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::git::Git;
 
 /// `git log` format: fields separated by `\x1f`, entries by `\x1e`.
-const LOG_FMT: &str = "%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%P%x1f%s%x1f%b%x1e";
+const LOG_FMT: &str = "%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%P%x1f%s%x1f%b%x1f%cn%x1f%ce%x1e";
 
 /// One commit in the history list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +31,10 @@ pub struct LogEntry {
     pub body: String,
     /// `(name, email)` pairs from trailing `Co-authored-by:` trailers.
     pub co_authors: Vec<(String, String)>,
+    /// The committer — almost always the author; differs when someone
+    /// else applied the patch (rebase, cherry-pick, web merge).
+    pub committer_name: String,
+    pub committer_email: String,
 }
 
 impl LogEntry {
@@ -292,7 +296,7 @@ fn parse_log(text: &str) -> Vec<LogEntry> {
                 return None;
             }
             let f: Vec<&str> = rec.split('\x1f').collect();
-            if f.len() < 8 {
+            if f.len() < 10 {
                 return None;
             }
             let body = f[7].trim_end_matches('\n').to_string();
@@ -306,6 +310,8 @@ fn parse_log(text: &str) -> Vec<LogEntry> {
                 subject: f[6].to_string(),
                 co_authors: co_authors(&body, f[3]),
                 body,
+                committer_name: f[8].to_string(),
+                committer_email: f[9].to_string(),
             })
         })
         .collect()
@@ -389,6 +395,9 @@ mod tests {
         assert_eq!(e.author_email, "test@wackdepot.local");
         assert!(e.parents.is_empty());
         assert!(e.authored_at.contains('T'));
+        // Test commits are authored and committed by the same identity.
+        assert_eq!(e.committer_name, "WackDepot Test");
+        assert_eq!(e.committer_email, "test@wackdepot.local");
     }
 
     #[test]

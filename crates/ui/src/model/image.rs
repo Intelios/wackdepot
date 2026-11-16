@@ -75,6 +75,12 @@ pub fn pair(v: &ByteVersions) -> ImageVersions {
     }
 }
 
+/// Decode image bytes into a `RenderImage` — the avatar store's decode.
+/// `None` for non-images and anything over `MAX_PIXELS`.
+pub fn render_image(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+    decode(bytes).map(|side| side.image)
+}
+
 /// Decode one side's bytes — `None` when the content isn't a decodable
 /// image (or tops `MAX_PIXELS`), so a `.zip` never reaches the renderer.
 fn decode(bytes: &[u8]) -> Option<SideImage> {

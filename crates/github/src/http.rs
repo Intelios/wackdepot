@@ -59,8 +59,14 @@ impl Transport for HttpTransport {
             .map_err(|_| "Couldn't reserve the GitHub connection. Try again.".to_string())?;
         let url = url::Url::parse(&request.url)
             .map_err(|_| "That GitHub address isn't valid.".to_string())?;
+        // avatars.githubusercontent.com is GitHub's own avatar CDN — the
+        // `u/e?email=` lookups carry no credentials (Authorization is only
+        // ever attached to api.github.com paths; keep it that way).
         if url.scheme() != "https"
-            || !matches!(url.host_str(), Some("api.github.com" | "github.com"))
+            || !matches!(
+                url.host_str(),
+                Some("api.github.com" | "github.com" | "avatars.githubusercontent.com")
+            )
             || !url.username().is_empty()
             || url.password().is_some()
             || url.port().is_some()

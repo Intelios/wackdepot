@@ -131,6 +131,9 @@ pub struct DiffCard {
     /// render — the sprite-atlas tiles need a `Window` to free, and
     /// `set_doc` doesn't have one.
     retired: Vec<Arc<RenderImage>>,
+    /// Avatar stack hover + its expand/collapse tween.
+    ava_hot: bool,
+    ava_exp: crate::components::avatars::StackExpand,
 }
 
 /// The two readings of a conflicted file: the worktree copy with its
@@ -208,6 +211,8 @@ impl DiffCard {
             tab,
             remembered: [None, None],
             retired: Vec::new(),
+            ava_hot: false,
+            ava_exp: Default::default(),
         }
     }
 
@@ -1290,7 +1295,12 @@ impl DiffCard {
         self.view_controls(cx).into_any_element()
     }
 
-    fn commit_head(&self, doc: &DiffDoc, cx: &mut Context<Self>) -> impl IntoElement {
+    fn commit_head(
+        &mut self,
+        doc: &DiffDoc,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let t = cx.theme().clone();
         let DocKind::Commit { entry, files } = &doc.kind else {
             return div().into_any_element();
@@ -1329,6 +1339,34 @@ impl DiffCard {
                             .gap(px(6.))
                             .text_size(px(12.))
                             .text_color(t.text_dim)
+                            .child({
+                                let people = crate::components::avatars::participants(entry);
+                                if people.is_empty() {
+                                    div().into_any_element()
+                                } else {
+                                    let key = crate::motion::id(&entry.sha);
+                                    let expand = self.ava_exp.sample(self.ava_hot, window, cx);
+                                    let avatars = crate::avatar_cache::store(cx);
+                                    crate::components::avatars::avatar_stack(
+                                        &people,
+                                        key,
+                                        20.0,
+                                        t.surface,
+                                        expand,
+                                        &t,
+                                        &avatars,
+                                        cx.listener(|this, hot: &bool, _, cx| {
+                                            if this.ava_hot != *hot {
+                                                this.ava_hot = *hot;
+                                                cx.notify();
+                                            }
+                                        }),
+                                        None,
+                                        None,
+                                    )
+                                    .into_any_element()
+                                }
+                            })
                             .child(entry.author_names())
                             .child("·")
                             .child(long_age(&entry.authored_at))
@@ -2151,20 +2189,23 @@ impl Render for DiffCard {
                 );
             }
             DocKind::Commit { .. } => {
-                card = card.child(self.commit_head(&doc, cx)).child(seam()).child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .flex()
-                        .child(self.file_strip(&doc, cx))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .h_full()
-                                .child(self.body_pane(stale, false, cx)),
-                        ),
-                );
+                card = card
+                    .child(self.commit_head(&doc, window, cx))
+                    .child(seam())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .child(self.file_strip(&doc, cx))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_full()
+                                    .child(self.body_pane(stale, false, cx)),
+                            ),
+                    );
             }
         }
         if doc.ignore_whitespace

@@ -17,6 +17,7 @@ notify.workspace = true
 image.workspace = true
 smallvec.workspace = true
 pulldown-cmark = "0.13"
+futures = "0.3"
 # Native glass, appearance and accessibility (macOS only, by design).
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSString", "NSObject"] }

@@ -182,6 +182,8 @@ mod tests {
             subject: String::new(),
             body: String::new(),
             co_authors: Vec::new(),
+            committer_name: String::new(),
+            committer_email: String::new(),
         }
     }
 
